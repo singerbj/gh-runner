@@ -14,7 +14,7 @@ import { downloadCached, extractArchive } from "./download.js";
 import { CliError, InterruptedError } from "./errors.js";
 import { CommandFailedError, execCommand } from "./exec.js";
 import type { CommandRunner, ExecOptions, SpawnHook } from "./exec.js";
-import { proposeWorkflowFix } from "./fix.js";
+import { fixLabelFor, fixLabels, proposeWorkflowFix } from "./fix.js";
 import type { WorkflowFixResult } from "./fix.js";
 import { GhClient } from "./gh.js";
 import { silentLogger } from "./logger.js";
@@ -264,14 +264,14 @@ export async function ghRunner(
     const fix = await proposeWorkflowFix({
       repo,
       repoRoot,
-      label: options.fixLabel ?? DEFAULT_LABEL,
+      ...(options.fixLabel ? { label: options.fixLabel } : {}),
       jobs: options.fixJobs,
       commandRunner,
       gh,
       logger,
       ...(signal ? { signal } : {}),
     });
-    reportFix(logger, fix);
+    reportFix(logger, fix, plans);
     throwIfAborted();
   }
 
@@ -605,9 +605,17 @@ async function shouldFixWorkflows(
   if (options.fixWorkflows === "always") return true;
   if (!workflowsNeedFix(report)) return false;
 
-  const count = report?.hosted.length ?? 0;
+  const hosted = report?.hosted ?? [];
+  const count = hosted.length;
+  const labels = [...new Set(hosted.map((target) => fixLabelFor(target, options.fixLabel)))];
+  const jobs = `${count} job${count === 1 ? "" : "s"}`;
+
+  // Naming the labels up front is the whole point: someone about to say yes can
+  // see that the macOS jobs stay on macOS.
   return confirm(
-    `Update ${count} job${count === 1 ? "" : "s"} to runs-on: [self-hosted, ${DEFAULT_LABEL}] and open a pull request?`,
+    labels.length === 1
+      ? `Update ${jobs} to runs-on: [self-hosted, ${labels[0]}] and open a pull request?`
+      : `Update ${jobs} to self-hosted runs-on (${labels.join(", ")}) and open a pull request?`,
     false,
   );
 }
@@ -664,7 +672,7 @@ function reportWorkflows(logger: Logger, report: WorkflowReport): void {
   }
 }
 
-function reportFix(logger: Logger, fix: WorkflowFixResult): void {
+function reportFix(logger: Logger, fix: WorkflowFixResult, plans: readonly TargetPlan[]): void {
   const { dim, green, bold } = logger.styles;
   const line = (text: string) => logger.raw(`    ${text}\n`);
 
@@ -682,8 +690,21 @@ function reportFix(logger: Logger, fix: WorkflowFixResult): void {
       line(dim(`would change ${fix.files.join(", ")} on ${fix.branch}`));
       return;
     case "opened":
-      for (const { file, job } of fix.jobs) {
-        line(`${green("✓")} ${file} ${dim("→")} ${bold(job)} now targets these runners`);
+      for (const { file, job, label } of fix.jobs) {
+        line(`${green("✓")} ${file} ${dim("→")} ${bold(job)} now wants ${label}`);
+      }
+      // A macOS job repointed from a Linux-only session would queue for a runner
+      // nobody has started. Say which one, and how to start it.
+      for (const label of fixLabels(fix.jobs)) {
+        if (plans.some((plan) => plan.allLabels.includes(label))) continue;
+        const os = osForLabel(label);
+        line(
+          `  ${dim(
+            os
+              ? `no ${label} runner online here — start one with: gh-runner ${SHORT_NAME[os]}`
+              : `no ${label} runner online here — register one with: --labels ${label}`,
+          )}`,
+        );
       }
       line(`${green("Pull request opened:")} ${fix.url ?? `branch ${fix.branch}`}`);
       return;

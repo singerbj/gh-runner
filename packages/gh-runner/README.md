@@ -177,11 +177,17 @@ The workflows are parsed with a real YAML parser ([`yaml`](https://www.npmjs.com
 When **no** job targets this runner, it offers to open a pull request:
 
 ```
-Update 3 jobs to runs-on: [self-hosted, gh-runner] and open a pull request? [y/N] y
+Update 3 jobs to self-hosted runs-on (gh-runner-linux, gh-runner-mac) and open a pull request? [y/N] y
 ==> Preparing a workflow fix on gh-runner/target-self-hosted-9f3c1ab7...
-    ✓ .github/workflows/ci.yml → build now targets this runner
+    ✓ .github/workflows/ci.yml → build now wants gh-runner-linux
+    ✓ .github/workflows/ci.yml → bundle now wants gh-runner-mac
+      no gh-runner-mac runner online here — start one with: gh-runner mac
     Pull request opened: https://github.com/octocat/thing/pull/42
 ```
+
+**Each job keeps the platform it already had.** The image in its current `runs-on` picks the label, so a `macos-14` job asks for `gh-runner-mac` and can only ever land on a Mac — never on whichever machine happens to be free. `ubuntu-*` gets `gh-runner-linux`, `windows-*` gets `gh-runner-windows`, and every variant of those names is understood (`macos-13-xlarge`, `ubuntu-24.04-arm`, `ubuntu-latest-8-cores`). Only a job whose runner name says nothing about an OS — a larger runner you named yourself — falls back to the generic `gh-runner`, which any registered machine answers.
+
+If the label a job ends up with has no runner online in this session, it says so and tells you which command starts one.
 
 The rewrite happens in a throwaway [`git worktree`](https://git-scm.com/docs/git-worktree) checked out from your default branch — **your working tree, index, staged changes, and current branch are never touched**, even with work in flight. The worktree and its local branch are removed on every exit path, including failures.
 
@@ -193,7 +199,7 @@ Only GitHub-hosted jobs get repointed. A job already asking for `self-hosted` wi
 
 - `--fix-workflows` opens the PR without asking (useful when there's no terminal to prompt on).
 - `--fix-jobs build,test` limits the rewrite to specific job ids.
-- `--fix-label gh-runner-mac` writes an OS-pinned label instead of the generic one.
+- `--fix-label gh-runner-mac` forces one label onto every rewritten job, instead of letting each job keep its own platform.
 - `--no-fix-workflows` never offers.
 - `--no-workflow-check` skips the audit entirely.
 
@@ -218,7 +224,7 @@ If the branch already exists on the remote, it links the open PR instead of stac
 | `--fix-workflows`        | Open the workflow PR without asking first                       |
 | `--no-fix-workflows`     | Never offer to open it                                          |
 | `--fix-jobs a,b`         | Limit the fix to these job ids                                  |
-| `--fix-label LABEL`      | Label the fix PR writes (default `gh-runner`)                   |
+| `--fix-label LABEL`      | Force one label on every job the fix PR rewrites                |
 | `-h, --help`             | Show help                                                       |
 | `-v, --version`          | Show version                                                    |
 
@@ -255,7 +261,7 @@ console.log(workflows?.matches); // jobs that will land here
 
 `ghRunner` resolves once every runner has finished and been deregistered. Aborting the signal shuts them down and cleans up. It never prompts unless you pass `confirm` / `selectPlatforms` in the context — `createConfirm()` and `terminalPlatformPicker` are the terminal implementations.
 
-The workflow pieces are exported on their own too: `inspectWorkflows`, `parseRunsOn`, `classifyTarget`, `applyRunsOnFix`, and `proposeWorkflowFix`.
+The workflow pieces are exported on their own too: `inspectWorkflows`, `parseRunsOn`, `classifyTarget`, `hostedRunnerOs`, `applyRunsOnFix`, `fixLabelFor`, and `proposeWorkflowFix`.
 
 ## How it works
 

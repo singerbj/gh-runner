@@ -80,7 +80,13 @@ Merges that don't change the version publish nothing, so unrelated work can land
 
 **Required repository secret:** `NPM_TOKEN` — an npm automation token with publish rights on `gh-runner`.
 
-The landing page deploys to GitHub Pages from the same branch via the [Pages workflow](.github/workflows/pages.yml). Enable Pages once with "GitHub Actions" as the source, and every push to `main` updates it.
+## The landing page
+
+`apps/web` deploys to GitHub Pages through the [Pages workflow](.github/workflows/pages.yml), which builds the site and publishes it on every push to `main` that touches it — plus on demand from the Actions tab.
+
+The workflow enables Pages itself (`configure-pages` with `enablement: true`), so no one has to visit Settings first; it just needs Actions to have write permission for Pages, which the workflow requests. Once `main` has this workflow, the site lands at **https://singerbj.github.io/gh-runner/**.
+
+The Vite build uses a relative `base`, so the same output works at a domain root or under a `/gh-runner/` project path without reconfiguration.
 
 ## License
 

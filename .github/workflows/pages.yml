@@ -3,6 +3,13 @@ name: Deploy landing page
 on:
   push:
     branches: [main]
+    # The site is built from these; a change anywhere else can't affect it.
+    paths:
+      - "apps/web/**"
+      - "package.json"
+      - "package-lock.json"
+      - "turbo.json"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 concurrency:
@@ -30,7 +37,18 @@ jobs:
 
       - run: npx turbo run build --filter=@gh-runner/web
 
+      # `enablement: true` turns Pages on with GitHub Actions as the source, so
+      # the first run of this workflow doesn't fail on a repo where nobody has
+      # been into Settings yet.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Check the build produced a site
+        run: |
+          test -s apps/web/dist/index.html
+          echo "index.html: $(wc -c < apps/web/dist/index.html) bytes"
+          ls apps/web/dist/assets
 
       - uses: actions/upload-pages-artifact@v4
         with:

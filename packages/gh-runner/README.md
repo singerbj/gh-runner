@@ -199,13 +199,13 @@ If the branch already exists on the remote, it links the open PR instead of stac
 
 | Option                   | Description                                                     |
 | ------------------------ | --------------------------------------------------------------- |
-| `--once`                 | Take one job, then deregister (default: stay online)            |
+| `--once`, `--ephemeral`  | Take one job, then deregister (default: stay online)            |
 | `--labels a,b,c`         | Extra labels on top of the `gh-runner` set and the host label   |
 | `--repo OWNER/NAME`      | Target a specific repo instead of detecting from cwd            |
 | `--name NAME`            | Runner name to register (default: `<host>-<pid>`)               |
 | `--allow-public`         | Permit registration on a public repo (**dangerous**, see below) |
 | `--all`                  | Serve every platform this machine can                           |
-| `--os a,b`               | Platforms to serve (same as positional arguments)               |
+| `--os a,b`, `--platform` | Platforms to serve (same as positional arguments)               |
 | `--docker-image IMAGE`   | Image for containerised runners (default GitHub's runner image) |
 | `--docker-platform P`    | Container platform, e.g. `linux/amd64`                          |
 | `--runner-version X.Y.Z` | Pin the runner version (default: latest release)                |
@@ -227,7 +227,7 @@ Everything else is designed to leave nothing behind:
 - The runner lives exactly as long as the command: no daemon, no service, nothing that survives the terminal.
 - `--once` registers it as **ephemeral**, so GitHub retires it after a single job.
 - Containerised runners isolate the job from your filesystem entirely: no volumes, no Docker socket, nothing mounted.
-- The working directory is a fresh `mktemp -d`, removed on exit.
+- A native runner's working directory is a fresh `mktemp -d`, removed on exit; a containerised one writes nothing to the host at all.
 - Deregistration runs on normal exit, on error, and on Ctrl+C.
 - The workflow fix runs in a disposable worktree and never writes to your checkout.
 - Your credentials stay in `gh`; this tool never handles a long-lived token.
@@ -257,11 +257,13 @@ The workflow pieces are exported on their own too: `inspectWorkflows`, `parseRun
 
 1. Checks `gh` is installed and authenticated.
 2. Resolves the repo from cwd (or `--repo`) and refuses public ones.
-3. Audits `.github/workflows` for a `runs-on` that matches, and offers the PR if none does.
-4. Downloads the matching `actions/runner` release, cached under `${XDG_CACHE_HOME:-~/.cache}/gh-runner`.
-5. Mints a short-lived registration token via the GitHub API and runs `config.sh` (adding `--ephemeral` only for `--once`).
-6. Runs `run.sh` in the foreground, taking jobs until you stop it.
-7. Mints a removal token, runs `config.sh remove`, and deletes the temp directory.
+3. Works out which platforms this machine can serve — probing Docker only if something other than the host OS is in play — then takes them from the arguments, the menu, or the single possible answer.
+4. Audits `.github/workflows` for a `runs-on` that matches any of the chosen runners, and offers the PR if none does.
+5. Starts one runner per platform, in parallel:
+   - **Native** — downloads the matching `actions/runner` release (cached under `${XDG_CACHE_HOME:-~/.cache}/gh-runner`), unpacks it into a fresh temp directory, mints a short-lived registration token, and runs `config.sh` then `run.sh`.
+   - **Container** — mints the same kind of token and runs GitHub's runner image, passing every value in through the environment. Nothing touches the host disk.
+6. Keeps them online, taking jobs, until you stop the command. `--once` adds `--ephemeral` so each retires after a single job instead.
+7. Cleans up on every exit path: native runners run `config.sh remove` and lose their temp directory; containers are force-removed and deregistered through the API, since `config.sh` is gone with the container.
 
 ## License
 

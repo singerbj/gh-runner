@@ -108,9 +108,23 @@ export class CommandFailedError extends Error {
     readonly args: readonly string[],
     readonly result: ExecResult,
   ) {
-    super(`\`${command} ${args.join(" ")}\` exited with ${result.code}`);
+    // Without the child's own words an exit code is a riddle: git says 255 for
+    // everything from a bad ref to a branch that already exists.
+    const said = firstLine(result.stderr) || firstLine(result.stdout);
+    super(
+      `\`${command} ${args.join(" ")}\` exited with ${result.code}` + (said ? `: ${said}` : ""),
+    );
     this.name = "CommandFailedError";
   }
+}
+
+function firstLine(output: string): string {
+  return (
+    output
+      .split("\n")
+      .find((line) => line.trim())
+      ?.trim() ?? ""
+  );
 }
 
 /** Runs a command and throws unless it exits 0. Returns trimmed stdout. */

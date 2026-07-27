@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FIX_BRANCH_PREFIX } from "./constants.js";
 import { CliError } from "./errors.js";
-import { execCapture } from "./exec.js";
+import { CommandFailedError, execCapture } from "./exec.js";
 import type { CommandRunner, ExecOptions } from "./exec.js";
 import type { GhClient } from "./gh.js";
 import type { Logger } from "./logger.js";
@@ -85,7 +85,16 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
   const worktree = join(tmpRoot, `workflows-${runId}`);
 
   try {
-    await git(["worktree", "add", "--quiet", "-b", branch, worktree, `origin/${base}`]);
+    try {
+      await git(["worktree", "add", "--quiet", "-b", branch, worktree, `origin/${base}`]);
+    } catch (error) {
+      // git says 255 for every one of these. A stack trace over a bare exit
+      // code is the least useful thing we could show at this point.
+      const detail = error instanceof CommandFailedError ? error.result.stderr.trim() : "";
+      throw new CliError(
+        `couldn't check out ${branch} in a temporary worktree${detail ? `\n       ${detail}` : ""}`,
+      );
+    }
 
     // Re-scan inside the worktree: the user's working copy may be ahead of, or
     // behind, the branch the PR is actually built on.
@@ -145,8 +154,12 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
   } finally {
     // Leave nothing behind: no worktree, no local branch, no temp directory.
     await commandRunner("git", ["worktree", "remove", "--force", worktree], exec).catch(() => {});
-    await commandRunner("git", ["branch", "-D", branch], exec).catch(() => {});
     await rm(tmpRoot, { recursive: true, force: true });
+    // `branch -D` refuses to delete a branch that is checked out somewhere, and
+    // a worktree we failed to remove still counts. Drop the registration first
+    // — prune only touches worktrees whose directory is already gone.
+    await commandRunner("git", ["worktree", "prune"], exec).catch(() => {});
+    await commandRunner("git", ["branch", "-D", branch], exec).catch(() => {});
   }
 }
 

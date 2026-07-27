@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { CommandFailedError, execCapture, execCommand, execSucceeds } from "../src/exec.js";
+import type { ExecResult } from "../src/exec.js";
 
 describe("execCommand", () => {
   it("captures stdout and stderr separately", async () => {
@@ -88,6 +89,26 @@ describe("execCapture / execSucceeds", () => {
     );
     expect(error).toBeInstanceOf(CommandFailedError);
     expect((error as CommandFailedError).result.code).toBe(2);
+  });
+
+  it("says what the command said, not just how it exited", async () => {
+    const said = (result: Partial<ExecResult>) =>
+      new CommandFailedError("git", ["worktree", "add"], {
+        code: 255,
+        stdout: "",
+        stderr: "",
+        ...result,
+      }).message;
+
+    expect(said({ stderr: "fatal: a branch named 'x' already exists\nhint: ignored\n" })).toBe(
+      "`git worktree add` exited with 255: fatal: a branch named 'x' already exists",
+    );
+    // Falls back to stdout — some commands fail without saying so on stderr.
+    expect(said({ stdout: "no such remote" })).toBe(
+      "`git worktree add` exited with 255: no such remote",
+    );
+    // Nothing to add when the command said nothing at all.
+    expect(said({})).toBe("`git worktree add` exited with 255");
   });
 
   it("reduces an exit code to a boolean", async () => {

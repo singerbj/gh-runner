@@ -1,6 +1,6 @@
 name: Release
 
-# Publishes packages/gh-runner-here to npm whenever main lands a commit that
+# Publishes packages/gh-runner to npm whenever main lands a commit that
 # bumps its version. Re-runs on an unchanged version are a no-op, so merging
 # unrelated work never republishes.
 on:
@@ -38,8 +38,8 @@ jobs:
       - name: Resolve the version to publish
         id: version
         run: |
-          name=$(node -p "require('./packages/gh-runner-here/package.json').name")
-          version=$(node -p "require('./packages/gh-runner-here/package.json').version")
+          name=$(node -p "require('./packages/gh-runner/package.json').name")
+          version=$(node -p "require('./packages/gh-runner/package.json').version")
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
@@ -53,7 +53,7 @@ jobs:
 
       - name: Publish
         if: steps.version.outputs.should_publish == 'true'
-        run: npm publish --workspace gh-runner-here --provenance --access public
+        run: npm publish --workspace gh-runner --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

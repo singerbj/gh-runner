@@ -1,3 +1,4 @@
+import { DEFAULT_LABEL } from "./constants.js";
 import { CliError } from "./errors.js";
 
 export interface RunnerOptions {
@@ -7,8 +8,17 @@ export interface RunnerOptions {
   allowPublic: boolean;
   /** OWNER/NAME. When omitted, detected from `cwd`. */
   repo: string | undefined;
-  /** Extra labels on top of the host label. */
+  /** Extra labels on top of `gh-runner` and the host label. */
   labels: string[];
+  /** Skip the `runs-on` audit of the repo's workflows. */
+  skipWorkflowCheck: boolean;
+  /**
+   * Whether to open a PR repointing GitHub-hosted jobs at this runner.
+   * `ask` prompts when no job would match and there's a terminal to ask on.
+   */
+  fixWorkflows: "ask" | "always" | "never";
+  /** Limit the fix to these job ids. Empty means every hosted job. */
+  fixJobs: string[];
   /** Pin the actions/runner version. When omitted, the latest release is used. */
   runnerVersion: string | undefined;
   /** Explicit runner name. Defaults to `<host-label>-<pid>`. */
@@ -24,27 +34,31 @@ export interface ParsedArgs {
   options: RunnerOptions;
 }
 
-export const USAGE = `gh-runner-here — temporarily register this machine as a GitHub Actions runner
+export const USAGE = `gh-runner — temporarily register this machine as a GitHub Actions runner
 
 USAGE
-  gh-runner-here [options]          # run from inside a git repo
-  npx gh-runner-here [options]
+  gh-runner [options]          # run from inside a git repo
+  npx gh-runner [options]
 
 OPTIONS
   --keep                 Stay online for multiple jobs (default: exit after one)
-  --labels a,b,c         Extra labels in addition to the default host label
+  --labels a,b,c         Extra labels in addition to gh-runner and the host label
   --repo OWNER/NAME      Target a specific repo instead of detecting from cwd
   --name NAME            Runner name to register (default: <host>-<pid>)
   --allow-public         Permit registration on a public repo (dangerous)
   --runner-version X.Y.Z Pin the runner version (default: latest release)
   --cache-dir PATH       Where to cache runner tarballs
+  --no-workflow-check    Skip the runs-on audit of .github/workflows
+  --fix-workflows        Open the workflow PR without asking first
+  --no-fix-workflows     Never offer to open it
+  --fix-jobs a,b         Limit the fix to these job ids
   -h, --help             Show this help
-  -v, --version          Show the gh-runner-here version
+  -v, --version          Show the gh-runner version
 
 IN YOUR WORKFLOW
   jobs:
     build:
-      runs-on: [self-hosted, <label printed at startup>]
+      runs-on: [self-hosted, ${DEFAULT_LABEL}]
 `;
 
 export function emptyOptions(): RunnerOptions {
@@ -53,6 +67,9 @@ export function emptyOptions(): RunnerOptions {
     allowPublic: false,
     repo: undefined,
     labels: [],
+    skipWorkflowCheck: false,
+    fixWorkflows: "ask",
+    fixJobs: [],
     runnerVersion: undefined,
     name: undefined,
     cacheDir: undefined,
@@ -111,6 +128,20 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         break;
       case "--cache-dir":
         options.cacheDir = requireValue("--cache-dir", argv[i + 1]);
+        i += 1;
+        break;
+      case "--no-workflow-check":
+        options.skipWorkflowCheck = true;
+        break;
+      case "--fix-workflows":
+        options.fixWorkflows = "always";
+        break;
+      case "--no-fix-workflows":
+        options.fixWorkflows = "never";
+        break;
+      case "--fix-jobs":
+        options.fixJobs = parseLabels(requireValue("--fix-jobs", argv[i + 1]));
+        options.fixWorkflows = "always";
         i += 1;
         break;
       case "-h":

@@ -84,19 +84,54 @@ export async function downloadCached(options: DownloadOptions): Promise<string> 
   throw new CliError(`download failed: ${url}\n       ${reason}`);
 }
 
-/** Extracts a gzipped tarball into `destination` using the system `tar`. */
-export async function extractTarball(
+/**
+ * Extracts the runner archive into `destination`.
+ *
+ * `tar` handles both shapes — it has shipped with Windows 10 since 1803 and
+ * reads zips — so it is tried first everywhere. PowerShell's `Expand-Archive`
+ * is the fallback for older Windows installs.
+ */
+export async function extractArchive(
   runner: CommandRunner,
-  tarball: string,
+  archive: string,
   destination: string,
-  signal?: AbortSignal,
+  options: { signal?: AbortSignal; zip?: boolean } = {},
 ): Promise<void> {
+  const { signal, zip = archive.endsWith(".zip") } = options;
+  const exec = signal ? { signal } : {};
   await mkdir(destination, { recursive: true });
+
+  const tarArgs = zip ? ["-xf", archive, "-C", destination] : ["xzf", archive, "-C", destination];
   try {
-    await execCapture(runner, "tar", ["xzf", tarball, "-C", destination], {
-      ...(signal ? { signal } : {}),
-    });
-  } catch {
-    throw new CliError(`couldn't extract ${tarball} — delete it and try again`);
+    await execCapture(runner, "tar", tarArgs, exec);
+    return;
+  } catch (tarError) {
+    if (!zip) {
+      throw new CliError(
+        `couldn't extract ${archive} — delete it and try again\n       ${describe(tarError)}`,
+      );
+    }
   }
+
+  try {
+    await execCapture(
+      runner,
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `Expand-Archive -LiteralPath "${archive}" -DestinationPath "${destination}" -Force`,
+      ],
+      exec,
+    );
+  } catch (error) {
+    throw new CliError(
+      `couldn't extract ${archive} — delete it and try again\n       ${describe(error)}`,
+    );
+  }
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -1,8 +1,8 @@
 {
-  "name": "@gh-runner-here/web",
+  "name": "@gh-runner/web",
   "version": "0.1.0",
   "private": true,
-  "description": "Landing page for gh-runner-here",
+  "description": "Landing page for gh-runner",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -1,5 +1,5 @@
 import { CliError } from "./errors.js";
-import { execCapture, execCommand, execSucceeds } from "./exec.js";
+import { CommandFailedError, execCapture, execCommand, execSucceeds } from "./exec.js";
 import type { CommandRunner, ExecOptions } from "./exec.js";
 
 export type RepoVisibility = "PUBLIC" | "PRIVATE" | "INTERNAL" | "UNKNOWN";
@@ -85,6 +85,19 @@ export class GhClient {
     }
   }
 
+  /** Top level of the git checkout containing `cwd`, or null if there is none. */
+  async repoRoot(cwd: string): Promise<string | null> {
+    try {
+      const root = await execCapture(this.runner, "git", ["rev-parse", "--show-toplevel"], {
+        ...this.execOptions,
+        cwd,
+      });
+      return root || null;
+    } catch {
+      return null;
+    }
+  }
+
   async visibility(repo: string): Promise<RepoVisibility> {
     try {
       const value = await execCapture(
@@ -126,6 +139,86 @@ export class GhClient {
       });
     } catch {
       throw new CliError(`couldn't mint a registration token — you need admin rights on ${repo}`);
+    }
+  }
+
+  /** The repo's default branch, e.g. `main`. */
+  async defaultBranch(repo: string): Promise<string> {
+    try {
+      const branch = await execCapture(
+        this.runner,
+        this.bin,
+        ["repo", "view", repo, "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"],
+        this.execOptions,
+      );
+      if (branch) return branch;
+    } catch {
+      // fall through
+    }
+    throw new CliError(`couldn't determine the default branch of ${repo}`);
+  }
+
+  /** URL of the pull request whose head is `branch`, if one is open. */
+  async pullRequestForBranch(repo: string, branch: string): Promise<string | null> {
+    try {
+      const url = await execCapture(
+        this.runner,
+        this.bin,
+        [
+          "pr",
+          "list",
+          "--repo",
+          repo,
+          "--head",
+          branch,
+          "--state",
+          "open",
+          "--json",
+          "url",
+          "--jq",
+          ".[0].url",
+        ],
+        this.execOptions,
+      );
+      return url || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Opens a pull request and returns its URL. */
+  async createPullRequest(options: {
+    repo: string;
+    base: string;
+    head: string;
+    title: string;
+    body: string;
+    cwd?: string;
+  }): Promise<string | null> {
+    const args = [
+      "pr",
+      "create",
+      "--repo",
+      options.repo,
+      "--base",
+      options.base,
+      "--head",
+      options.head,
+      "--title",
+      options.title,
+      "--body",
+      options.body,
+    ];
+    try {
+      const output = await execCapture(this.runner, this.bin, args, {
+        ...this.execOptions,
+        ...(options.cwd ? { cwd: options.cwd } : {}),
+      });
+      const url = output.split("\n").find((line) => line.startsWith("https://"));
+      return url ?? null;
+    } catch (error) {
+      const detail = error instanceof CommandFailedError ? error.result.stderr.trim() : "";
+      throw new CliError(`couldn't open a pull request${detail ? `\n       ${detail}` : ""}`);
     }
   }
 

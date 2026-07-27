@@ -3,13 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>gh-runner-here — this machine, as a GitHub Actions runner</title>
+    <title>gh-runner — this machine, as a GitHub Actions runner</title>
     <meta
       name="description"
       content="Temporarily register the machine you're sitting at as an ephemeral GitHub Actions self-hosted runner for the repo you're standing in. One command, no cleanup."
     />
     <meta name="color-scheme" content="dark light" />
-    <meta property="og:title" content="gh-runner-here" />
+    <meta property="og:title" content="gh-runner" />
     <meta
       property="og:description"
       content="Temporarily register this machine as a GitHub Actions self-hosted runner. Runs one job, then deregisters and deletes itself."
@@ -26,9 +26,10 @@
 
     <header class="site-header">
       <div class="wrap header-inner">
-        <span class="wordmark"><span class="prompt">$</span> gh-runner-here</span>
+        <span class="wordmark"><span class="prompt">$</span> gh-runner</span>
         <nav aria-label="Primary">
           <a href="#how">How it works</a>
+          <a href="#check">Workflow check</a>
           <a href="#options">Options</a>
           <a href="#safety">Safety</a>
           <a
@@ -46,7 +47,7 @@
         <p class="eyebrow">GitHub Actions · self-hosted · ephemeral</p>
         <h1>Your machine.<br />Their CI.<br /><span class="accent">One command.</span></h1>
         <p class="lede">
-          <strong>gh-runner-here</strong> temporarily registers the computer you're sitting at as a
+          <strong>gh-runner</strong> temporarily registers the computer you're sitting at as a
           self-hosted runner for the repo you're standing in. It waits for one job, deregisters, and
           deletes everything it downloaded. Ctrl+C does the same.
         </p>
@@ -55,15 +56,15 @@
           <button
             class="copy-command"
             type="button"
-            data-copy="npx gh-runner-here"
-            aria-label="Copy npx gh-runner-here to clipboard"
+            data-copy="npx gh-runner"
+            aria-label="Copy npx gh-runner to clipboard"
           >
-            <code><span class="prompt">$</span> npx gh-runner-here</code>
+            <code><span class="prompt">$</span> npx gh-runner</code>
             <span class="copy-state" aria-hidden="true">Copy</span>
           </button>
           <a
             class="button-secondary"
-            href="https://www.npmjs.com/package/gh-runner-here"
+            href="https://www.npmjs.com/package/gh-runner"
             rel="noreferrer noopener"
             >View on npm</a
           >
@@ -73,19 +74,19 @@
           <li>No install</li>
           <li>Nothing left registered</li>
           <li>Nothing left on disk</li>
-          <li>macOS &amp; Linux</li>
+          <li>macOS, Linux &amp; Windows</li>
         </ul>
       </section>
 
       <section class="wrap terminal-section" aria-label="Example session">
-        <div
-          class="terminal"
-          role="img"
-          aria-label="Example terminal session running gh-runner-here"
-        >
+        <div class="terminal" role="img" aria-label="Example terminal session running gh-runner">
           <div class="terminal-bar"><span></span><span></span><span></span></div>
           <pre class="terminal-body"><code><span class="c-dim">~/code/my-repo</span>
-<span class="c-prompt">$</span> npx gh-runner-here
+<span class="c-prompt">$</span> npx gh-runner
+<span class="c-bold">==&gt;</span> Checking .github/workflows for a matching runs-on...
+    <span class="c-green">✓</span> .github/workflows/bench.yml <span class="c-dim">→</span> <span class="c-bold">bench</span> will run here
+    <span class="c-dim">!</span> .github/workflows/ci.yml:9 <span class="c-dim">→</span> <span class="c-bold">gpu</span> wants cuda, which this runner won't have
+      <span class="c-dim">register it too with: --labels cuda</span>
 <span class="c-bold">==&gt;</span> Looking up the latest runner release...
 <span class="c-bold">==&gt;</span> Downloading runner v2.334.0 (osx-arm64)... <span class="c-dim">cached for next time</span>
 <span class="c-bold">==&gt;</span> Requesting a registration token for <span class="c-bold">octocat/private-thing</span>...
@@ -93,10 +94,10 @@
 
   <span class="c-green">Runner is live.</span>  Target it with:
 
-      <span class="c-bold">runs-on: [self-hosted, my-macbook-pro]</span>
+      <span class="c-bold">runs-on: [self-hosted, gh-runner]</span>
 
   Repo:   octocat/private-thing
-  Labels: self-hosted, osx, arm64, my-macbook-pro
+  Labels: self-hosted, macOS, ARM64, gh-runner, my-macbook-pro
   Mode:   ephemeral — exits after one job
 
   <span class="c-dim">Ctrl+C to stop and deregister.</span>
@@ -175,24 +176,31 @@
             </p>
           </li>
           <li>
+            <h3>Audits your workflows</h3>
+            <p>
+              Reads <code>.github/workflows</code> and reports which jobs will actually land here —
+              and offers to open a PR when none of them would.
+            </p>
+          </li>
+          <li>
             <h3>Fetches the runner</h3>
             <p>
               Downloads the matching <code>actions/runner</code> release for your OS and
-              architecture, cached under <code>~/.cache/gh-runner-here</code> for next time.
+              architecture, cached under <code>~/.cache/gh-runner</code> for next time.
             </p>
           </li>
           <li>
             <h3>Registers ephemerally</h3>
             <p>
-              Mints a short-lived registration token, configures the runner in a fresh temp
-              directory, and labels it after your machine.
+              Mints a short-lived registration token and configures the runner in a fresh temp
+              directory under the <code>gh-runner</code> label.
             </p>
           </li>
           <li>
             <h3>Runs your job</h3>
             <p>
-              Target it with <code>runs-on: [self-hosted, &lt;label&gt;]</code>. The label is
-              printed at startup so you can copy it straight into your workflow.
+              Any job with <code>runs-on: [self-hosted, gh-runner]</code> lands here. Same label on
+              every machine, so the YAML doesn't care whose laptop showed up.
             </p>
           </li>
           <li>
@@ -208,14 +216,95 @@
       <section class="wrap" id="workflow" aria-labelledby="workflow-heading">
         <h2 id="workflow-heading">In your workflow</h2>
         <p class="section-lede">
-          The startup banner prints the label to target. Drop it into <code>runs-on</code>:
+          One label, every machine. Drop it into <code>runs-on</code> and any registered runner
+          picks the job up:
         </p>
         <pre class="code-block"><code><span class="c-key">jobs:</span>
   <span class="c-key">build:</span>
-    <span class="c-key">runs-on:</span> [self-hosted, my-macbook-pro]
+    <span class="c-key">runs-on:</span> [self-hosted, gh-runner]
     <span class="c-key">steps:</span>
       - <span class="c-key">uses:</span> actions/checkout@v5
       - <span class="c-key">run:</span> npm ci &amp;&amp; npm test</code></pre>
+
+        <h3 class="subhead">One machine, one runner</h3>
+        <p class="section-lede">
+          <code>gh-runner</code> registers the machine it's running on — nothing more. On an Apple
+          silicon MacBook that's exactly one runner, labelled
+          <code>self-hosted, macOS, ARM64, gh-runner</code>. No VMs, no containers, and no Linux or
+          Windows runner conjured out of thin air.
+        </p>
+        <p class="section-lede">
+          To cover several operating systems, run it on several machines. They all register under
+          the same <code>gh-runner</code> label, so add the OS label GitHub attaches automatically
+          whenever a job actually cares:
+        </p>
+        <pre class="code-block"><code><span class="c-key">jobs:</span>
+  <span class="c-key">mac-build:</span>
+    <span class="c-key">runs-on:</span> [self-hosted, gh-runner, macOS]
+  <span class="c-key">linux-build:</span>
+    <span class="c-key">runs-on:</span> [self-hosted, gh-runner, Linux]
+  <span class="c-key">windows-build:</span>
+    <span class="c-key">runs-on:</span> [self-hosted, gh-runner, Windows]</code></pre>
+      </section>
+
+      <section class="wrap" id="check" aria-labelledby="check-heading">
+        <h2 id="check-heading">It checks that before it starts</h2>
+        <p class="section-lede">
+          Registering a runner nothing targets is the easiest way to waste ten minutes. On startup,
+          <code>gh-runner</code> reads every workflow and tells you which jobs will actually land
+          here — then offers to fix the ones that won't.
+        </p>
+
+        <div class="terminal">
+          <div class="terminal-bar"><span></span><span></span><span></span></div>
+          <pre
+            class="terminal-body"
+          ><code><span class="c-bold">==&gt;</span> Checking .github/workflows for a matching runs-on...
+    <span class="c-dim">!</span> no job targets this runner; 3 target GitHub-hosted runners
+
+Update 3 jobs to runs-on: [self-hosted, gh-runner] and open a pull request? <span class="c-dim">[y/N]</span> y
+
+<span class="c-bold">==&gt;</span> Preparing a workflow fix on gh-runner/target-self-hosted...
+    <span class="c-green">✓</span> .github/workflows/ci.yml <span class="c-dim">→</span> <span class="c-bold">build</span> now targets this runner
+    <span class="c-green">Pull request opened:</span> https://github.com/octocat/thing/pull/42</code></pre>
+        </div>
+
+        <div class="grid check-grid">
+          <article class="card">
+            <h3>Your working tree is never touched</h3>
+            <p>
+              The rewrite happens in a throwaway <code>git worktree</code> checked out from your
+              default branch. Staged changes, unstaged edits, and your current branch all stay
+              exactly as they were — the worktree and its branch are removed on every exit path.
+            </p>
+          </article>
+          <article class="card">
+            <h3>It reads YAML properly</h3>
+            <p>
+              Scalars, inline lists, block sequences, and the <code>group:</code>/<code
+                >labels:</code
+              >
+              mapping are all understood. When <code>runs-on</code> is a
+              <code>${{ }}</code> expression it says so instead of guessing.
+            </p>
+          </article>
+          <article class="card">
+            <h3>It only changes what it should</h3>
+            <p>
+              Only GitHub-hosted jobs get repointed. A job already asking for
+              <code>self-hosted</code> with labels you lack is left alone — that one's fixed with
+              <code>--labels</code>, not a PR.
+            </p>
+          </article>
+          <article class="card">
+            <h3>You stay in charge</h3>
+            <p>
+              It asks before doing anything. <code>--fix-workflows</code> skips the prompt,
+              <code>--no-fix-workflows</code> silences the offer, and
+              <code>--fix-jobs a,b</code> narrows it to specific jobs.
+            </p>
+          </article>
+        </div>
       </section>
 
       <section class="wrap" id="options" aria-labelledby="options-heading">
@@ -235,7 +324,7 @@
               </tr>
               <tr>
                 <td><code>--labels a,b,c</code></td>
-                <td>Extra labels in addition to the default host label</td>
+                <td>Extra labels in addition to <code>gh-runner</code> and the host label</td>
               </tr>
               <tr>
                 <td><code>--repo OWNER/NAME</code></td>
@@ -255,7 +344,23 @@
               </tr>
               <tr>
                 <td><code>--cache-dir PATH</code></td>
-                <td>Where to cache downloaded runner tarballs</td>
+                <td>Where to cache downloaded runner archives</td>
+              </tr>
+              <tr>
+                <td><code>--no-workflow-check</code></td>
+                <td>Skip the <code>runs-on</code> audit of <code>.github/workflows</code></td>
+              </tr>
+              <tr>
+                <td><code>--fix-workflows</code></td>
+                <td>Open the workflow PR without asking first</td>
+              </tr>
+              <tr>
+                <td><code>--no-fix-workflows</code></td>
+                <td>Never offer to open it</td>
+              </tr>
+              <tr>
+                <td><code>--fix-jobs a,b</code></td>
+                <td>Limit the fix to these job ids</td>
               </tr>
             </tbody>
           </table>
@@ -301,16 +406,16 @@
         <button
           class="copy-command large"
           type="button"
-          data-copy="npx gh-runner-here"
-          aria-label="Copy npx gh-runner-here to clipboard"
+          data-copy="npx gh-runner"
+          aria-label="Copy npx gh-runner to clipboard"
         >
-          <code><span class="prompt">$</span> npx gh-runner-here</code>
+          <code><span class="prompt">$</span> npx gh-runner</code>
           <span class="copy-state" aria-hidden="true">Copy</span>
         </button>
         <p class="fine-print">
           Requires <a href="https://cli.github.com" rel="noreferrer noopener">gh</a>, authenticated
-          with <code>gh auth login</code>, plus admin rights on the target repo. macOS and Linux,
-          x64 and arm64.
+          with <code>gh auth login</code>, plus admin rights on the target repo. macOS, Linux and
+          Windows, on x64 and arm64.
         </p>
       </section>
     </main>
@@ -320,7 +425,7 @@
         <span>MIT licensed</span>
         <nav aria-label="Footer">
           <a href="https://github.com/singerbj/gh-runner" rel="noreferrer noopener">Source</a>
-          <a href="https://www.npmjs.com/package/gh-runner-here" rel="noreferrer noopener">npm</a>
+          <a href="https://www.npmjs.com/package/gh-runner" rel="noreferrer noopener">npm</a>
           <a href="https://github.com/singerbj/gh-runner/issues" rel="noreferrer noopener"
             >Issues</a
           >

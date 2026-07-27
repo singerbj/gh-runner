@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 import { CliError, InterruptedError } from "./errors.js";
 import { createLogger } from "./logger.js";
 import { USAGE, parseArgs } from "./options.js";
-import { ghRunnerHere } from "./runner.js";
+import { createConfirm } from "./prompt.js";
+import { ghRunner } from "./runner.js";
 
 function readVersion(): string {
   try {
@@ -63,8 +64,9 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   process.on("SIGTERM", onSignal);
 
   try {
-    await ghRunnerHere(parsed.options, {
+    await ghRunner(parsed.options, {
       logger,
+      confirm: createConfirm(),
       signal: abort.signal,
       onRunnerSpawn: (spawned) => {
         child = spawned;

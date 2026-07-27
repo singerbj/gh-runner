@@ -1,11 +1,11 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CliError } from "../src/errors.js";
 import type { CommandRunner, ExecResult } from "../src/exec.js";
 import { GhClient } from "../src/gh.js";
-import { ghRunnerHere } from "../src/runner.js";
+import { ghRunner } from "../src/runner.js";
 
 const VERSION = "2.334.0";
 const PLATFORM = { os: "linux", arch: "x64" } as const;
@@ -39,7 +39,7 @@ const ok = (stdout: string): ExecResult => ({ code: 0, stdout, stderr: "" });
 let cacheDir = "";
 
 beforeEach(async () => {
-  cacheDir = await mkdtemp(join(tmpdir(), "gh-runner-here-test-"));
+  cacheDir = await mkdtemp(join(tmpdir(), "gh-runner-test-"));
   // Pre-seed the cache so the run never reaches the network.
   await writeFile(join(cacheDir, TARBALL), "not-really-a-tarball");
 });
@@ -48,10 +48,10 @@ afterEach(async () => {
   await rm(cacheDir, { recursive: true, force: true });
 });
 
-describe("ghRunnerHere", () => {
+describe("ghRunner", () => {
   it("registers, runs, and reports what it set up", async () => {
     const { runner, calls } = stubRunner();
-    const summary = await ghRunnerHere(
+    const summary = await ghRunner(
       { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir, labels: ["gpu"] },
       {
         commandRunner: runner,
@@ -63,7 +63,7 @@ describe("ghRunnerHere", () => {
 
     expect(summary.repo).toBe("octocat/private-thing");
     expect(summary.ephemeral).toBe(true);
-    expect(summary.labels).toEqual([summary.hostLabel, "gpu"]);
+    expect(summary.labels).toEqual(["gh-runner", summary.hostLabel, "gpu"]);
     expect(summary.runnerName).toBe(`${summary.hostLabel}-${process.pid}`);
 
     const config = calls.find((c) => c.command.endsWith("config.sh"));
@@ -79,7 +79,7 @@ describe("ghRunnerHere", () => {
 
   it("drops --ephemeral when --keep is set", async () => {
     const { runner, calls } = stubRunner();
-    const summary = await ghRunnerHere(
+    const summary = await ghRunner(
       { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir, keep: true },
       {
         commandRunner: runner,
@@ -104,10 +104,10 @@ describe("ghRunnerHere", () => {
     };
     const options = { repo: "octocat/open-source", runnerVersion: VERSION, cacheDir };
 
-    await expect(ghRunnerHere(options, context)).rejects.toThrow(CliError);
-    await expect(ghRunnerHere(options, context)).rejects.toThrow(/is PUBLIC/);
+    await expect(ghRunner(options, context)).rejects.toThrow(CliError);
+    await expect(ghRunner(options, context)).rejects.toThrow(/is PUBLIC/);
 
-    await expect(ghRunnerHere({ ...options, allowPublic: true }, context)).resolves.toMatchObject({
+    await expect(ghRunner({ ...options, allowPublic: true }, context)).resolves.toMatchObject({
       repo: "octocat/open-source",
     });
   });
@@ -117,7 +117,7 @@ describe("ghRunnerHere", () => {
       "config.sh": { code: 1, stdout: "", stderr: "Invalid registration token" },
     });
     await expect(
-      ghRunnerHere(
+      ghRunner(
         { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
         {
           commandRunner: runner,
@@ -129,13 +129,97 @@ describe("ghRunnerHere", () => {
     ).rejects.toThrow(/runner registration failed[\s\S]*Invalid registration token/);
   });
 
+  it("audits the repo's workflows and offers to fix them", async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), "gh-runner-repo-"));
+    await mkdir(join(repoRoot, ".github", "workflows"), { recursive: true });
+    await writeFile(
+      join(repoRoot, ".github", "workflows", "ci.yml"),
+      ["jobs:", "  build:", "    runs-on: ubuntu-latest"].join("\n"),
+    );
+
+    // `--show-toplevel` answers with the fixture; `ls-remote` succeeding means
+    // the fix stops at "branch already exists" instead of touching a real repo.
+    const { runner } = stubRunner({ "rev-parse --show-toplevel": ok(repoRoot) });
+    const asked: string[] = [];
+    const summary = await ghRunner(
+      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
+      {
+        commandRunner: runner,
+        gh: new GhClient({ runner }),
+        platform: PLATFORM,
+        nodePlatform: "linux",
+        confirm: (question) => {
+          asked.push(question);
+          return Promise.resolve(false);
+        },
+      },
+    );
+
+    expect(summary.workflows?.scanned).toBe(true);
+    expect(summary.workflows?.hosted.map((t) => t.job)).toEqual(["build"]);
+    expect(summary.workflows?.matches).toEqual([]);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatch(/Update 1 job to runs-on: \[self-hosted, gh-runner\]/);
+
+    await rm(repoRoot, { recursive: true, force: true });
+  });
+
+  it("never asks when a job already targets the runner", async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), "gh-runner-repo-"));
+    await mkdir(join(repoRoot, ".github", "workflows"), { recursive: true });
+    await writeFile(
+      join(repoRoot, ".github", "workflows", "ci.yml"),
+      ["jobs:", "  build:", "    runs-on: [self-hosted, gh-runner]"].join("\n"),
+    );
+
+    const { runner } = stubRunner({ "rev-parse --show-toplevel": ok(repoRoot) });
+    let asked = 0;
+    const summary = await ghRunner(
+      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
+      {
+        commandRunner: runner,
+        gh: new GhClient({ runner }),
+        platform: PLATFORM,
+        nodePlatform: "linux",
+        confirm: () => {
+          asked += 1;
+          return Promise.resolve(true);
+        },
+      },
+    );
+
+    expect(summary.workflows?.matches.map((t) => t.job)).toEqual(["build"]);
+    expect(asked).toBe(0);
+
+    await rm(repoRoot, { recursive: true, force: true });
+  });
+
+  it("skips the audit entirely with --no-workflow-check", async () => {
+    const { runner } = stubRunner();
+    const summary = await ghRunner(
+      {
+        repo: "octocat/private-thing",
+        runnerVersion: VERSION,
+        cacheDir,
+        skipWorkflowCheck: true,
+      },
+      {
+        commandRunner: runner,
+        gh: new GhClient({ runner }),
+        platform: PLATFORM,
+        nodePlatform: "linux",
+      },
+    );
+    expect(summary.workflows).toBeUndefined();
+  });
+
   it("stops before touching the network when already aborted", async () => {
     const { runner, calls } = stubRunner();
     const abort = new AbortController();
     abort.abort();
 
     await expect(
-      ghRunnerHere(
+      ghRunner(
         { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
         {
           commandRunner: runner,

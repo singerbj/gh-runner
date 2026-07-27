@@ -28,7 +28,7 @@ jobs:
 
       - run: npm ci
 
-      - run: npx turbo run build --filter=@gh-runner-here/web
+      - run: npx turbo run build --filter=@gh-runner/web
 
       - uses: actions/configure-pages@v5
 

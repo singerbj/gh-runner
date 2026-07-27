@@ -370,6 +370,12 @@ h3 {
   letter-spacing: -0.01em;
 }
 
+.subhead {
+  font-size: 1.15rem;
+  margin: 2.25rem 0 0.75rem;
+  letter-spacing: -0.015em;
+}
+
 .section-lede {
   color: var(--text-muted);
   margin-top: -0.75rem;
@@ -380,6 +386,12 @@ h3 {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
   gap: 1rem;
+}
+
+/* Four cards read better as a 2×2 block than a 3+1 orphan row. */
+.check-grid {
+  margin-top: 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(24rem, 1fr));
 }
 
 .card {

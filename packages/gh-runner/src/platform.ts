@@ -4,7 +4,7 @@ import { CliError } from "./errors.js";
 import { execCapture } from "./exec.js";
 import type { CommandRunner } from "./exec.js";
 
-export type RunnerOs = "osx" | "linux";
+export type RunnerOs = "osx" | "linux" | "win";
 export type RunnerArch = "x64" | "arm64";
 
 export interface RunnerPlatform {
@@ -25,8 +25,11 @@ export function detectPlatform(
     case "linux":
       os = "linux";
       break;
+    case "win32":
+      os = "win";
+      break;
     default:
-      throw new CliError(`unsupported OS: ${platform} (macOS and Linux only)`);
+      throw new CliError(`unsupported OS: ${platform} (macOS, Linux, and Windows only)`);
   }
 
   let runnerArch: RunnerArch;
@@ -44,12 +47,25 @@ export function detectPlatform(
   return { os, arch: runnerArch };
 }
 
-export function runnerTarball(platform: RunnerPlatform, version: string): string {
-  return `actions-runner-${platform.os}-${platform.arch}-${version}.tar.gz`;
+/** actions/runner ships Windows as a .zip and everything else as a .tar.gz. */
+export function runnerArchive(platform: RunnerPlatform, version: string): string {
+  const extension = platform.os === "win" ? "zip" : "tar.gz";
+  return `actions-runner-${platform.os}-${platform.arch}-${version}.${extension}`;
 }
 
 export function runnerDownloadUrl(platform: RunnerPlatform, version: string): string {
-  return `https://github.com/actions/runner/releases/download/v${version}/${runnerTarball(platform, version)}`;
+  return `https://github.com/actions/runner/releases/download/v${version}/${runnerArchive(platform, version)}`;
+}
+
+/** `config.sh`/`run.sh`, or their `.cmd` counterparts on Windows. */
+export function runnerScript(platform: RunnerPlatform, name: "config" | "run"): string {
+  return platform.os === "win" ? `${name}.cmd` : `${name}.sh`;
+}
+
+/** The labels GitHub attaches to every self-hosted runner, as it spells them. */
+export function implicitLabels(platform: RunnerPlatform): string[] {
+  const os = platform.os === "osx" ? "macOS" : platform.os === "win" ? "Windows" : "Linux";
+  return ["self-hosted", os, platform.arch.toUpperCase()];
 }
 
 /**
@@ -88,7 +104,13 @@ export async function detectHostLabel(
   return slugify(raw) || "local";
 }
 
-export function defaultCacheDir(env: NodeJS.ProcessEnv = process.env): string {
+export function defaultCacheDir(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform === "win32") {
+    return join(env["LOCALAPPDATA"] || join(homedir(), "AppData", "Local"), "gh-runner", "cache");
+  }
   const base = env["XDG_CACHE_HOME"] || join(env["HOME"] || homedir(), ".cache");
-  return join(base, "gh-runner-here");
+  return join(base, "gh-runner");
 }

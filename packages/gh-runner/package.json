@@ -1,5 +1,5 @@
 {
-  "name": "gh-runner-here",
+  "name": "gh-runner",
   "version": "0.1.0",
   "description": "Temporarily register this machine as an ephemeral GitHub Actions self-hosted runner for the repo you're standing in.",
   "keywords": [
@@ -18,14 +18,14 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/singerbj/gh-runner.git",
-    "directory": "packages/gh-runner-here"
+    "directory": "packages/gh-runner"
   },
   "bugs": {
     "url": "https://github.com/singerbj/gh-runner/issues"
   },
   "type": "module",
   "bin": {
-    "gh-runner-here": "dist/cli.js"
+    "gh-runner": "dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -46,7 +46,8 @@
   },
   "os": [
     "darwin",
-    "linux"
+    "linux",
+    "win32"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/finalize-build.mjs",

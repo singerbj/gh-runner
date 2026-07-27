@@ -6,7 +6,9 @@ import {
   detectHostLabel,
   detectPlatform,
   runnerDownloadUrl,
-  runnerTarball,
+  runnerArchive,
+  runnerScript,
+  implicitLabels,
   slugify,
 } from "../src/platform.js";
 
@@ -23,16 +25,40 @@ describe("detectPlatform", () => {
     expect(detectPlatform("linux", "arm64")).toEqual({ os: "linux", arch: "arm64" });
   });
 
+  it("maps Windows too", () => {
+    expect(detectPlatform("win32", "x64")).toEqual({ os: "win", arch: "x64" });
+    expect(detectPlatform("win32", "arm64")).toEqual({ os: "win", arch: "arm64" });
+  });
+
   it("refuses unsupported platforms and architectures", () => {
-    expect(() => detectPlatform("win32", "x64")).toThrow(CliError);
+    expect(() => detectPlatform("freebsd", "x64")).toThrow(CliError);
     expect(() => detectPlatform("linux", "s390x")).toThrow(/unsupported architecture/);
+  });
+});
+
+describe("platform-specific runner assets", () => {
+  it("uses a zip and .cmd scripts on Windows, tarballs and .sh elsewhere", () => {
+    const win = { os: "win", arch: "x64" } as const;
+    const mac = { os: "osx", arch: "arm64" } as const;
+
+    expect(runnerArchive(win, "2.334.0")).toBe("actions-runner-win-x64-2.334.0.zip");
+    expect(runnerArchive(mac, "2.334.0")).toBe("actions-runner-osx-arm64-2.334.0.tar.gz");
+    expect(runnerScript(win, "config")).toBe("config.cmd");
+    expect(runnerScript(win, "run")).toBe("run.cmd");
+    expect(runnerScript(mac, "run")).toBe("run.sh");
+  });
+
+  it("reports the labels GitHub attaches for free", () => {
+    expect(implicitLabels({ os: "osx", arch: "arm64" })).toEqual(["self-hosted", "macOS", "ARM64"]);
+    expect(implicitLabels({ os: "linux", arch: "x64" })).toEqual(["self-hosted", "Linux", "X64"]);
+    expect(implicitLabels({ os: "win", arch: "x64" })).toEqual(["self-hosted", "Windows", "X64"]);
   });
 });
 
 describe("runner asset naming", () => {
   it("builds the tarball name and its release URL", () => {
     const platform = { os: "osx", arch: "arm64" } as const;
-    expect(runnerTarball(platform, "2.334.0")).toBe("actions-runner-osx-arm64-2.334.0.tar.gz");
+    expect(runnerArchive(platform, "2.334.0")).toBe("actions-runner-osx-arm64-2.334.0.tar.gz");
     expect(runnerDownloadUrl(platform, "2.334.0")).toBe(
       "https://github.com/actions/runner/releases/download/v2.334.0/actions-runner-osx-arm64-2.334.0.tar.gz",
     );
@@ -71,7 +97,13 @@ describe("detectHostLabel", () => {
 
 describe("defaultCacheDir", () => {
   it("honours XDG_CACHE_HOME, then HOME", () => {
-    expect(defaultCacheDir({ XDG_CACHE_HOME: "/xdg" })).toBe("/xdg/gh-runner-here");
-    expect(defaultCacheDir({ HOME: "/home/ben" })).toBe("/home/ben/.cache/gh-runner-here");
+    expect(defaultCacheDir({ XDG_CACHE_HOME: "/xdg" })).toBe("/xdg/gh-runner");
+    expect(defaultCacheDir({ HOME: "/home/ben" })).toBe("/home/ben/.cache/gh-runner");
+  });
+
+  it("uses LOCALAPPDATA on Windows", () => {
+    expect(defaultCacheDir({ LOCALAPPDATA: "C:\\Users\\ben\\AppData\\Local" }, "win32")).toContain(
+      "gh-runner",
+    );
   });
 });

@@ -76,7 +76,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -o pipefail
-          npm publish --workspace gh-runner --provenance --access public 2>&1 | tee publish.log
+          npm publish --workspace @singerbj/gh-runner --provenance --access public 2>&1 | tee publish.log
 
       # npm's failures here are accurate and unhelpful in equal measure, and the
       # 403 in particular has a non-obvious cause worth naming.

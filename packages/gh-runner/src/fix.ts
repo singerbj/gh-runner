@@ -179,7 +179,7 @@ ${jobList(jobs)}
 
 ## Why
 
-[\`gh-runner\`](https://www.npmjs.com/package/gh-runner) registers a developer machine as an
+[\`gh-runner\`](https://www.npmjs.com/package/@singerbj/gh-runner) registers a developer machine as an
 ephemeral self-hosted runner under the \`${label}\` label. Jobs have to ask for that label before
 they can land on it, so this PR makes the label a stable contract in the workflow YAML.
 
@@ -187,7 +187,7 @@ they can land on it, so this PR makes the label a stable contract in the workflo
 
 These jobs will **only** run while a machine is registered under \`${label}\`. With no runner
 online they queue instead of failing, so this is a deliberate trade: faster, local hardware in
-exchange for CI that depends on someone running \`npx gh-runner\`.
+exchange for CI that depends on someone running \`npx @singerbj/gh-runner\`.
 
 Keep hosted runs for anything that must pass without a human present, and repoint only the jobs
 that genuinely need your hardware.

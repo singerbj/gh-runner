@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { CliError } from "../src/errors.js";
 import { execCommand } from "../src/exec.js";
 import type { CommandRunner, ExecResult } from "../src/exec.js";
 import { GhClient } from "../src/gh.js";
@@ -189,6 +190,17 @@ describe("proposeWorkflowFix", () => {
     git(checkout, "worktree", "remove", "--force", stale);
     git(checkout, "branch", "-D", "gh-runner/target-self-hosted");
     await rm(stale, { recursive: true, force: true });
+  });
+
+  it("explains a worktree it couldn't check out", async () => {
+    // The one name a run can't randomize is one it was handed.
+    git(checkout, "branch", "taken");
+
+    const failed = await propose({ branch: "taken" }).catch((error: unknown) => error);
+
+    expect(failed).toBeInstanceOf(CliError);
+    expect((failed as Error).message).toContain("couldn't check out taken");
+    expect((failed as Error).message).toContain("already exists");
   });
 
   it("gives each run its own branch", async () => {

@@ -3,6 +3,13 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_LABEL, OS_NAMES, osForLabel, osLabel } from "./constants.js";
+import {
+  DEFAULT_IMAGE,
+  archForDockerPlatform,
+  assertDockerAvailable,
+  removeContainer,
+  runInDocker,
+} from "./docker.js";
 import { downloadCached, extractArchive } from "./download.js";
 import { CliError, InterruptedError } from "./errors.js";
 import { proposeWorkflowFix } from "./fix.js";
@@ -122,12 +129,24 @@ export async function ghRunner(
   }
   throwIfAborted();
 
-  const platform = context.platform ?? detectPlatform();
+  const hostPlatform = context.platform ?? detectPlatform();
+  // A container is a Linux machine no matter what the host is, so the labels
+  // and the workflow audit have to describe the container, not the host.
+  const platform: RunnerPlatform = options.docker
+    ? { os: "linux", arch: archForDockerPlatform(options.dockerPlatform, hostPlatform.arch) }
+    : hostPlatform;
+
   const hostLabel = await detectHostLabel(commandRunner, context.nodePlatform);
   // Generic label first, then one pinned to this OS, then this specific box.
   const labels = [DEFAULT_LABEL, osLabel(platform.os), hostLabel, ...options.labels];
-  const runnerName = options.name ?? `${hostLabel}-${process.pid}`;
+  const runnerName =
+    options.name ?? `${hostLabel}${options.docker ? "-docker" : ""}-${process.pid}`;
   const allLabels = [...implicitLabels(platform), ...labels];
+
+  if (options.docker) {
+    await assertDockerAvailable(commandRunner, signal ? { signal } : {});
+    throwIfAborted();
+  }
 
   // Auditing and fixing workflows both need the checkout, not just the slug.
   const repoRoot = await gh.repoRoot(options.cwd ?? process.cwd());
@@ -163,6 +182,58 @@ export async function ghRunner(
     });
     reportFix(logger, fix);
     throwIfAborted();
+  }
+
+  const banner = (extra: string[] = []) => {
+    // Pad against the longest so the annotations line up; styling is applied
+    // after measuring, since escape codes have no width.
+    const targets: Array<[string, string]> = [
+      [`runs-on: [self-hosted, ${DEFAULT_LABEL}]`, "any registered machine"],
+      [`runs-on: [self-hosted, ${osLabel(platform.os)}]`, `${OS_NAMES[platform.os]} only`],
+    ];
+    const width = Math.max(...targets.map(([snippet]) => snippet.length));
+
+    logger.raw(
+      [
+        "",
+        `  ${green("Runner is live.")}  Target it with:`,
+        "",
+        ...targets.map(
+          ([snippet, note]) =>
+            `      ${bold(snippet)}${" ".repeat(width - snippet.length)}  ${dim(note)}`,
+        ),
+        "",
+        `  Repo:   ${repo}`,
+        `  Labels: ${allLabels.join(", ")}`,
+        ...extra,
+        `  Mode:   ${
+          options.keep ? "staying online until you Ctrl+C" : "ephemeral — exits after one job"
+        }`,
+        "",
+        `  ${dim("Ctrl+C to stop and deregister.")}`,
+        "",
+        "",
+      ].join("\n"),
+    );
+  };
+
+  if (options.docker) {
+    return runContainerised({
+      repo,
+      options,
+      labels,
+      allLabels,
+      hostLabel,
+      runnerName,
+      platform,
+      commandRunner,
+      gh,
+      cleanupGh,
+      logger,
+      workflows,
+      banner,
+      ...(context.onRunnerSpawn ? { onRunnerSpawn: context.onRunnerSpawn } : {}),
+    });
   }
 
   let runnerVersion = options.runnerVersion;
@@ -249,35 +320,7 @@ export async function ghRunner(
       workflows,
     };
 
-    // Pad against the longer of the two so the annotations line up; styling is
-    // applied after measuring, since escape codes have no width.
-    const targets: Array<[string, string]> = [
-      [`runs-on: [self-hosted, ${DEFAULT_LABEL}]`, "any registered machine"],
-      [`runs-on: [self-hosted, ${osLabel(platform.os)}]`, `${OS_NAMES[platform.os]} only`],
-    ];
-    const width = Math.max(...targets.map(([snippet]) => snippet.length));
-
-    logger.raw(
-      [
-        "",
-        `  ${green("Runner is live.")}  Target it with:`,
-        "",
-        ...targets.map(
-          ([snippet, note]) =>
-            `      ${bold(snippet)}${" ".repeat(width - snippet.length)}  ${dim(note)}`,
-        ),
-        "",
-        `  Repo:   ${repo}`,
-        `  Labels: ${allLabels.join(", ")}`,
-        `  Mode:   ${
-          options.keep ? "staying online until you Ctrl+C" : "ephemeral — exits after one job"
-        }`,
-        "",
-        `  ${dim("Ctrl+C to stop and deregister.")}`,
-        "",
-        "",
-      ].join("\n"),
-    );
+    banner();
 
     // No abort signal here: Ctrl+C reaches the runner through the terminal's
     // foreground process group, and it shuts itself down cleanly.
@@ -296,6 +339,82 @@ export async function ghRunner(
     throw new CliError("runner exited before it finished registering");
   }
   return summary;
+}
+
+interface ContainerRun {
+  repo: string;
+  options: RunnerOptions;
+  labels: string[];
+  allLabels: string[];
+  hostLabel: string;
+  runnerName: string;
+  platform: RunnerPlatform;
+  commandRunner: CommandRunner;
+  gh: GhClient;
+  cleanupGh: GhClient;
+  logger: Logger;
+  workflows: WorkflowReport | undefined;
+  banner: (extra?: string[]) => void;
+  onRunnerSpawn?: SpawnHook;
+}
+
+/**
+ * Runs the runner inside a Linux container.
+ *
+ * Nothing is downloaded or extracted — GitHub's runner image already has it —
+ * and nothing is written to the host at all. Deregistration goes through the
+ * API rather than `config.sh remove`, because by then the container is gone.
+ */
+async function runContainerised(run: ContainerRun): Promise<RunSummary> {
+  const { repo, options, logger, commandRunner, gh, cleanupGh, platform } = run;
+  const { dim } = logger.styles;
+  const image = options.dockerImage ?? DEFAULT_IMAGE;
+  const containerName = `gh-runner-${process.pid}`;
+
+  logger.say(`Requesting a registration token for ${logger.styles.bold(repo)}...`);
+  const registrationToken = await gh.registrationToken(repo);
+
+  logger.say(`Starting ${image}... ${dim("first run pulls the image, which takes a while")}`);
+
+  try {
+    run.banner([
+      `  Image:  ${image}${options.dockerPlatform ? ` (${options.dockerPlatform})` : ""}`,
+      `  Host:   this machine, via Docker — the job cannot see your filesystem`,
+    ]);
+
+    await runInDocker(
+      commandRunner,
+      {
+        repo,
+        image,
+        dockerPlatform: options.dockerPlatform,
+        containerName,
+        runnerName: run.runnerName,
+        labels: run.labels,
+        ephemeral: !options.keep,
+        registrationToken,
+      },
+      run.onRunnerSpawn,
+    );
+  } finally {
+    await removeContainer(commandRunner, containerName);
+    // An ephemeral runner that took a job is already retired; this catches the
+    // one that never did.
+    if (await cleanupGh.deleteRunnerByName(repo, run.runnerName)) {
+      logger.say("Deregistered runner.");
+    }
+  }
+
+  return {
+    repo,
+    runnerName: run.runnerName,
+    labels: run.labels,
+    hostLabel: run.hostLabel,
+    runnerVersion: "container",
+    platform,
+    ephemeral: !options.keep,
+    workflows: run.workflows,
+  };
 }
 
 /**

@@ -271,6 +271,52 @@
           </table>
         </div>
 
+        <h3 class="subhead">Docker gets you Linux from anywhere</h3>
+        <p class="section-lede">
+          <code>gh-runner --docker</code> runs the runner inside a Linux container instead of
+          natively, registering exactly the labels a real Linux machine would. Nothing is unpacked
+          on your host, and the job can't see your filesystem — no volumes, no Docker socket.
+        </p>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Your machine</th>
+                <th scope="col">Native</th>
+                <th scope="col">Plus <code>--docker</code></th>
+                <th scope="col">Still can't provide</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>macOS</td>
+                <td><code>gh-runner-mac</code></td>
+                <td><code>gh-runner-linux</code></td>
+                <td>Windows</td>
+              </tr>
+              <tr>
+                <td>Linux</td>
+                <td><code>gh-runner-linux</code></td>
+                <td><code>gh-runner-linux</code>, sandboxed</td>
+                <td>macOS, Windows</td>
+              </tr>
+              <tr>
+                <td>Windows</td>
+                <td><code>gh-runner-windows</code></td>
+                <td><code>gh-runner-linux</code></td>
+                <td>macOS</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="section-lede">
+          <strong>Docker cannot get you macOS or Windows.</strong> macOS containers don't exist —
+          there's no macOS container runtime, and Apple's licence only permits macOS
+          <em>virtual machines</em>, on Apple hardware. Windows containers share the host kernel, so
+          they only run on Windows. Full three-OS coverage is a Mac and a Windows box, with Docker
+          covering Linux from either, so you don't need a third machine.
+        </p>
+
         <h3 class="subhead">One machine, one runner</h3>
         <p class="section-lede">
           <code>gh-runner</code> registers the machine it's running on — nothing more. On an Apple
@@ -370,6 +416,18 @@ Update 3 jobs to runs-on: [self-hosted, gh-runner] and open a pull request? <spa
               <tr>
                 <td><code>--allow-public</code></td>
                 <td>Permit registration on a public repo — see below</td>
+              </tr>
+              <tr>
+                <td><code>--docker</code></td>
+                <td>Run the runner in a Linux container instead of natively</td>
+              </tr>
+              <tr>
+                <td><code>--docker-image IMAGE</code></td>
+                <td>Image to use (default <code>ghcr.io/actions/actions-runner:latest</code>)</td>
+              </tr>
+              <tr>
+                <td><code>--docker-platform P</code></td>
+                <td>Container platform, e.g. <code>linux/amd64</code></td>
               </tr>
               <tr>
                 <td><code>--runner-version X.Y.Z</code></td>

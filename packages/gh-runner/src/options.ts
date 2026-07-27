@@ -1,4 +1,5 @@
 import { DEFAULT_LABEL, OS_LABELS } from "./constants.js";
+import { DEFAULT_IMAGE } from "./docker.js";
 import { CliError } from "./errors.js";
 
 export interface RunnerOptions {
@@ -21,6 +22,12 @@ export interface RunnerOptions {
   fixJobs: string[];
   /** Label the fix PR writes into `runs-on`. Defaults to `gh-runner`. */
   fixLabel: string | undefined;
+  /** Run the runner inside a Linux container instead of natively. */
+  docker: boolean;
+  /** Image to run in `--docker` mode. Defaults to GitHub's runner image. */
+  dockerImage: string | undefined;
+  /** `--platform` for the container, e.g. `linux/amd64`. */
+  dockerPlatform: string | undefined;
   /** Pin the actions/runner version. When omitted, the latest release is used. */
   runnerVersion: string | undefined;
   /** Explicit runner name. Defaults to `<host-label>-<pid>`. */
@@ -48,6 +55,9 @@ OPTIONS
   --repo OWNER/NAME      Target a specific repo instead of detecting from cwd
   --name NAME            Runner name to register (default: <host>-<pid>)
   --allow-public         Permit registration on a public repo (dangerous)
+  --docker               Run the runner in a Linux container (any host OS)
+  --docker-image IMAGE   Image to use (default: ${DEFAULT_IMAGE})
+  --docker-platform P    Container platform, e.g. linux/amd64
   --runner-version X.Y.Z Pin the runner version (default: latest release)
   --cache-dir PATH       Where to cache runner tarballs
   --no-workflow-check    Skip the runs-on audit of .github/workflows
@@ -80,6 +90,9 @@ export function emptyOptions(): RunnerOptions {
     fixWorkflows: "ask",
     fixJobs: [],
     fixLabel: undefined,
+    docker: false,
+    dockerImage: undefined,
+    dockerPlatform: undefined,
     runnerVersion: undefined,
     name: undefined,
     cacheDir: undefined,
@@ -156,6 +169,19 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         break;
       case "--fix-label":
         options.fixLabel = requireValue("--fix-label", argv[i + 1]);
+        i += 1;
+        break;
+      case "--docker":
+        options.docker = true;
+        break;
+      case "--docker-image":
+        options.dockerImage = requireValue("--docker-image", argv[i + 1]);
+        options.docker = true;
+        i += 1;
+        break;
+      case "--docker-platform":
+        options.dockerPlatform = requireValue("--docker-platform", argv[i + 1]);
+        options.docker = true;
         i += 1;
         break;
       case "-h":

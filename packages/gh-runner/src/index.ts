@@ -2,7 +2,14 @@ export { ghRunner, workflowsNeedFix } from "./runner.js";
 export type { RunContext, RunSummary } from "./runner.js";
 export { parseArgs, parseLabels, emptyOptions, USAGE } from "./options.js";
 export type { RunnerOptions, ParsedArgs } from "./options.js";
-export { DEFAULT_LABEL, FIX_BRANCH } from "./constants.js";
+export {
+  DEFAULT_LABEL,
+  OS_LABELS,
+  OS_NAMES,
+  osLabel,
+  osForLabel,
+  FIX_BRANCH,
+} from "./constants.js";
 export { GhClient } from "./gh.js";
 export type { GhClientOptions, RepoVisibility } from "./gh.js";
 export {
@@ -29,6 +36,16 @@ export {
 } from "./platform.js";
 export type { RunnerPlatform, RunnerOs, RunnerArch } from "./platform.js";
 export { downloadCached, extractArchive } from "./download.js";
+export {
+  DEFAULT_IMAGE,
+  archForDockerPlatform,
+  assertDockerAvailable,
+  containerScript,
+  dockerRunArgs,
+  runInDocker,
+  removeContainer,
+} from "./docker.js";
+export type { DockerRunOptions } from "./docker.js";
 export { createLogger, silentLogger, createStyles } from "./logger.js";
 export type { Logger, LoggerOptions, Styles } from "./logger.js";
 export { execCommand, execCapture, execSucceeds, CommandFailedError } from "./exec.js";

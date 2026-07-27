@@ -222,6 +222,30 @@ export class GhClient {
     }
   }
 
+  /**
+   * Deletes a runner by name through the API.
+   *
+   * The container path can't run `config.sh remove` — the container is gone by
+   * then — so it deregisters from the outside instead. Best effort: an
+   * ephemeral runner that took a job is already retired, and this returns false
+   * rather than complicating an exit path.
+   */
+  async deleteRunnerByName(repo: string, name: string): Promise<boolean> {
+    try {
+      const id = await this.api(`repos/${repo}/actions/runners?per_page=100`, {
+        // JSON-quoted so a name with a quote in it can't break out of the filter.
+        jq: `.runners[] | select(.name == ${JSON.stringify(name)}) | .id`,
+      });
+      const runnerId = id.split("\n")[0]?.trim();
+      if (!runnerId) return false;
+
+      await this.api(`repos/${repo}/actions/runners/${runnerId}`, { method: "DELETE" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Best-effort: cleanup should never fail louder than the thing it cleans up. */
   async removeToken(repo: string): Promise<string | null> {
     try {

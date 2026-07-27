@@ -56,11 +56,42 @@ jobs:
 
 GitHub adds `self-hosted`, `macOS`/`Linux`/`Windows`, and `X64`/`ARM64` on top of those, so you can pin by architecture too.
 
+### Docker: one extra OS, not all of them
+
+`--docker` runs the runner inside a Linux container instead of natively:
+
+```bash
+gh-runner --docker                          # a Linux runner, on any host
+gh-runner --docker --docker-platform linux/amd64   # x64 under emulation on Apple silicon
+```
+
+It registers exactly the same labels a native Linux machine would (`gh-runner`, `gh-runner-linux`, `Linux`, `X64`/`ARM64`), so from GitHub's side it _is_ a Linux runner. Nothing is downloaded or unpacked on the host — GitHub's runner image already contains the runner.
+
+What that buys you, honestly:
+
+| Your machine | Native `gh-runner`  | Plus `gh-runner --docker`    | Still can't provide |
+| ------------ | ------------------- | ---------------------------- | ------------------- |
+| macOS        | `gh-runner-mac`     | `gh-runner-linux`            | Windows             |
+| Linux        | `gh-runner-linux`   | `gh-runner-linux`, sandboxed | macOS, Windows      |
+| Windows      | `gh-runner-windows` | `gh-runner-linux`            | macOS               |
+
+**Docker gets you Linux from anywhere. It cannot get you macOS or Windows.**
+
+- **macOS containers don't exist.** There is no macOS container runtime — the kernel has no equivalent of namespaces for this, and Apple's licence only permits macOS _virtual machines_, on Apple hardware. Only a real Mac can serve `gh-runner-mac`. (Apple's own `container` tool on macOS 15+ runs _Linux_ containers, not macOS ones.)
+- **Windows containers only run on Windows hosts.** Containers share the host kernel, so a Linux or macOS box can't run them at any price. Even on Windows they're multi-gigabyte and there's no supported runner image, so `gh-runner-windows` means a real Windows machine.
+
+Full three-OS coverage is therefore a Mac and a Windows box — with Docker covering Linux from either, so you don't need a third machine.
+
+Two things to know about container mode:
+
+- **No host mounts, no Docker socket.** The job can't see your filesystem, which is the main reason to use it — but it also means jobs that run `docker build` won't work, since mounting the socket would hand the container root on your machine. Run those natively.
+- **The first run pulls a ~1 GB image.** After that it's cached by Docker.
+
 ### One machine, one runner
 
 `gh-runner` registers **the machine it's running on** — nothing more. On an Apple silicon MacBook you get exactly one runner: `self-hosted, macOS, ARM64, gh-runner, gh-runner-mac, <hostname>`. It does not spin up Linux or Windows runners for you; there's no VM or container involved.
 
-To cover several operating systems, run it on several machines — one `npx gh-runner` per box. That's what the per-OS labels are for: with a Mac and a Linux box both online, `[self-hosted, gh-runner]` goes to whichever is free, while `[self-hosted, gh-runner-mac]` only ever goes to the Mac.
+To cover several operating systems, run it on several machines — one `npx gh-runner` per box, or `--docker` for a Linux one. That's what the per-OS labels are for: with a Mac and a Linux box both online, `[self-hosted, gh-runner]` goes to whichever is free, while `[self-hosted, gh-runner-mac]` only ever goes to the Mac.
 
 The startup audit knows the difference. Run `gh-runner` on your Mac against a repo whose jobs ask for `gh-runner-linux` and it says so plainly:
 
@@ -119,6 +150,9 @@ If the branch already exists on the remote, it links the open PR instead of stac
 | `--repo OWNER/NAME`      | Target a specific repo instead of detecting from cwd            |
 | `--name NAME`            | Runner name to register (default: `<host>-<pid>`)               |
 | `--allow-public`         | Permit registration on a public repo (**dangerous**, see below) |
+| `--docker`               | Run the runner in a Linux container instead of natively         |
+| `--docker-image IMAGE`   | Image to use (default `ghcr.io/actions/actions-runner:latest`)  |
+| `--docker-platform P`    | Container platform, e.g. `linux/amd64`                          |
 | `--runner-version X.Y.Z` | Pin the runner version (default: latest release)                |
 | `--cache-dir PATH`       | Where to cache runner tarballs                                  |
 | `--no-workflow-check`    | Skip the `runs-on` audit of `.github/workflows`                 |
@@ -136,6 +170,7 @@ If the branch already exists on the remote, it links the open PR instead of stac
 Everything else is designed to leave nothing behind:
 
 - The runner is **ephemeral** by default — GitHub retires it after one job.
+- `--docker` isolates the job from your filesystem entirely: no volumes, no Docker socket, nothing mounted.
 - The working directory is a fresh `mktemp -d`, removed on exit.
 - Deregistration runs on normal exit, on error, and on Ctrl+C.
 - The workflow fix runs in a disposable worktree and never writes to your checkout.

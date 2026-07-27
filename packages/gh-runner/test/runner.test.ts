@@ -213,6 +213,88 @@ describe("ghRunner", () => {
     expect(summary.workflows).toBeUndefined();
   });
 
+  it("runs in a Linux container with --docker, whatever the host is", async () => {
+    const { runner, calls } = stubRunner({ "runners?per_page": ok("") });
+    const summary = await ghRunner(
+      { repo: "octocat/private-thing", cacheDir, docker: true, skipWorkflowCheck: true },
+      {
+        commandRunner: runner,
+        gh: new GhClient({ runner }),
+        // A macOS host still registers a Linux runner.
+        platform: { os: "osx", arch: "arm64" },
+        nodePlatform: "darwin",
+      },
+    );
+
+    expect(summary.platform).toEqual({ os: "linux", arch: "arm64" });
+    expect(summary.labels).toEqual(["gh-runner", "gh-runner-linux", summary.hostLabel]);
+    expect(summary.runnerName).toContain("-docker-");
+
+    const run = calls.find((c) => c.command === "docker" && c.args[0] === "run");
+    expect(run).toBeDefined();
+    expect(run?.args).toContain("--rm");
+    expect(run?.args).toContain("GHR_TOKEN=REG123");
+
+    // Nothing was downloaded or unpacked on the host.
+    expect(calls.some((c) => c.command === "tar")).toBe(false);
+    expect(calls.some((c) => c.command.endsWith("config.sh"))).toBe(false);
+  });
+
+  it("labels the container run by the platform it was told to use", async () => {
+    const { runner } = stubRunner({ "runners?per_page": ok("") });
+    const summary = await ghRunner(
+      {
+        repo: "octocat/private-thing",
+        cacheDir,
+        docker: true,
+        dockerPlatform: "linux/amd64",
+        skipWorkflowCheck: true,
+      },
+      {
+        commandRunner: runner,
+        gh: new GhClient({ runner }),
+        platform: { os: "osx", arch: "arm64" },
+        nodePlatform: "darwin",
+      },
+    );
+    expect(summary.platform).toEqual({ os: "linux", arch: "x64" });
+  });
+
+  it("removes the container and deregisters even when the run fails", async () => {
+    const { runner, calls } = stubRunner({
+      "docker run": { code: 1, stdout: "", stderr: "boom" },
+      "runners?per_page": ok("42"),
+    });
+
+    await ghRunner(
+      { repo: "octocat/private-thing", cacheDir, docker: true, skipWorkflowCheck: true },
+      {
+        commandRunner: runner,
+        gh: new GhClient({ runner }),
+        platform: { os: "linux", arch: "x64" },
+        nodePlatform: "linux",
+      },
+    );
+
+    expect(calls.some((c) => c.command === "docker" && c.args[0] === "rm")).toBe(true);
+    expect(calls.some((c) => c.args.join(" ").includes("-X DELETE"))).toBe(true);
+  });
+
+  it("refuses --docker when the daemon isn't reachable", async () => {
+    const { runner } = stubRunner({ "docker info": { code: 1, stdout: "", stderr: "no daemon" } });
+    await expect(
+      ghRunner(
+        { repo: "octocat/private-thing", cacheDir, docker: true, skipWorkflowCheck: true },
+        {
+          commandRunner: runner,
+          gh: new GhClient({ runner }),
+          platform: { os: "linux", arch: "x64" },
+          nodePlatform: "linux",
+        },
+      ),
+    ).rejects.toThrow(/daemon isn't reachable/);
+  });
+
   it("stops before touching the network when already aborted", async () => {
     const { runner, calls } = stubRunner();
     const abort = new AbortController();

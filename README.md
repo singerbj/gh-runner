@@ -78,7 +78,11 @@ gh-runner --repo owner/name
 
 Merges that don't change the version publish nothing, so unrelated work can land freely.
 
-**Required repository secret:** `NPM_TOKEN` — an npm automation token with publish rights on `gh-runner`, added at **Settings → Secrets and variables → Actions**. The workflow checks for it before publishing, so a missing token fails with that instruction instead of `npm error code ENEEDAUTH`.
+**Required repository secret:** `NPM_TOKEN`, added at **Settings → Secrets and variables → Actions**.
+
+Use a **classic Automation token**, or a granular token with **Read and write on _all_ packages**. A granular token limited to selected packages can't publish `gh-runner` until `gh-runner` exists — npm only lets you select packages that are already there, so the very first publish of a new name fails with a `403 Forbidden` that says nothing about scopes. (The other way through that chicken-and-egg: publish the first version by hand once, then scope a token — or [Trusted Publishing](https://docs.npmjs.com/trusted-publishers) — to the package that now exists.)
+
+The workflow checks the secret exists before building the tarball, and translates a `403` into the explanation above rather than leaving you with npm's wording.
 
 ## The landing page
 

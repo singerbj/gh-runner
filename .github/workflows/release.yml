@@ -69,10 +69,43 @@ jobs:
           exit 1
 
       - name: Publish
+        id: publish
         if: steps.version.outputs.should_publish == 'true'
-        run: npm publish --workspace gh-runner --provenance --access public
+        continue-on-error: true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -o pipefail
+          npm publish --workspace gh-runner --provenance --access public 2>&1 | tee publish.log
+
+      # npm's failures here are accurate and unhelpful in equal measure, and the
+      # 403 in particular has a non-obvious cause worth naming.
+      - name: Explain a publish failure
+        if: steps.publish.outcome == 'failure'
+        run: |
+          if grep -q "E403" publish.log; then
+            echo "::error::npm refused the publish with 403 Forbidden."
+            echo
+            echo "The token authenticated fine, so this is about what it's allowed"
+            echo "to do. The usual cause for a package that doesn't exist yet:"
+            echo
+            echo "  A granular access token can only be scoped to packages that"
+            echo "  already exist. Scoped to 'Only select packages', it cannot"
+            echo "  create a new one — which is exactly what the first publish is."
+            echo
+            echo "Any one of these fixes it:"
+            echo "  1. Use a classic Automation token (npm -> Access Tokens ->"
+            echo "     Generate New Token -> Classic -> Automation)."
+            echo "  2. Use a granular token with Packages and scopes set to"
+            echo "     'Read and write' on ALL packages, not selected ones."
+            echo "  3. Publish this first version once from a laptop"
+            echo "     (npm publish --access public), then scope a granular token"
+            echo "     or Trusted Publishing to the now-existing package."
+            echo
+            echo "Also check the name is free and the account is allowed to publish"
+            echo "it: https://www.npmjs.com/package/${{ steps.version.outputs.name }}"
+          fi
+          exit 1
 
       - name: Tag the release
         if: steps.version.outputs.should_publish == 'true'

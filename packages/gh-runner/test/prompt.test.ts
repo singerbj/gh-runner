@@ -18,7 +18,7 @@ function fakeTty(answer: string) {
   return { input, output, asked: () => asked };
 }
 
-const confirmWith = (answer: string, fallback?: boolean) => {
+const confirmWith = (answer: string) => {
   const tty = fakeTty(answer);
   const confirm = createConfirm({
     input: tty.input as unknown as NodeJS.ReadStream,

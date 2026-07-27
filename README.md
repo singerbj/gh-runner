@@ -1,6 +1,6 @@
 # gh-runner
 
-Monorepo for **[`gh-runner`](https://www.npmjs.com/package/gh-runner)** — a CLI that temporarily registers the machine you're sitting at as a GitHub Actions self-hosted runner for the repo you're standing in, waits for one job, then deregisters and deletes itself.
+Monorepo for **[`gh-runner`](https://www.npmjs.com/package/gh-runner)** — a CLI that temporarily registers the machine you're sitting at as a GitHub Actions self-hosted runner for the repo you're standing in. It stays online for as long as the command runs, then deregisters and deletes itself.
 
 ```bash
 cd ~/code/my-repo
@@ -27,13 +27,32 @@ Full CLI docs live in [`packages/gh-runner/README.md`](packages/gh-runner/README
 Requires Node 20+.
 
 ```bash
-npm install          # install the whole workspace
+npm install          # install the whole workspace (and the git hooks)
 npm run dev          # watch-build the CLI and serve the landing page
 npm run build        # turbo build every package
 npm test             # turbo run the test suites
 npm run typecheck    # turbo typecheck every package
-npm run format       # prettier --write .
+npm run lint         # oxlint
+npm run format       # oxfmt .
+npm run audit        # better-npm-audit
+npm run verify       # lint + format:check + typecheck + test, all of it
 ```
+
+### Checks
+
+[oxlint](https://oxc.rs/docs/guide/usage/linter.html) and [oxfmt](https://oxc.rs/docs/guide/usage/formatter.html) handle linting and formatting — both Rust, both fast enough to run on every commit. oxfmt owns every file type it supports (JS, TS, JSON); nothing else formats them, so there's no second formatter to disagree with.
+
+A **husky pre-commit hook** runs all three checks:
+
+```
+pre-commit: oxlint
+pre-commit: oxfmt
+pre-commit: better-npm-audit
+```
+
+It's installed by `npm install` via the `prepare` script. The audit needs the network, so `SKIP_AUDIT=1 git commit ...` skips that one check when you're offline; `git commit --no-verify` skips everything.
+
+[better-npm-audit](https://www.npmjs.com/package/better-npm-audit) also runs [every Monday at noon UTC](.github/workflows/audit.yml). A scheduled run that fails quietly is worthless, so a failure opens a `security`-labelled issue (or comments on the open one) with the report attached.
 
 The repo is a [Turborepo](https://turborepo.com); each task above fans out to the workspaces that define it, with caching between runs.
 

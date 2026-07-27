@@ -1,0 +1,17 @@
+# Runs on every commit. `git commit --no-verify` bypasses it when you must.
+set -e
+
+echo "pre-commit: oxlint"
+npm run --silent lint
+
+echo "pre-commit: oxfmt"
+npm run --silent format:check
+
+# The audit needs the network, so a plane or a locked-down box would otherwise
+# block every commit. Skip that one check rather than skipping all three.
+if [ "${SKIP_AUDIT:-0}" = "1" ]; then
+  echo "pre-commit: audit skipped (SKIP_AUDIT=1)"
+else
+  echo "pre-commit: better-npm-audit"
+  npm run --silent audit
+fi

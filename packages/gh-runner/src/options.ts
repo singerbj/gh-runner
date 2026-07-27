@@ -4,8 +4,11 @@ import { CliError } from "./errors.js";
 import { parseTargetNames } from "./targets.js";
 
 export interface RunnerOptions {
-  /** Stay online for many jobs instead of exiting after one. */
-  keep: boolean;
+  /**
+   * Deregister after a single job instead of staying online. Off by default:
+   * the runner lives as long as the command does.
+   */
+  once: boolean;
   /** Register on a public repo, where any fork PR could run code here. */
   allowPublic: boolean;
   /** OWNER/NAME. When omitted, detected from `cwd`. */
@@ -69,7 +72,7 @@ PLATFORMS
 OPTIONS
   --all                  Serve every platform this machine can
   --os a,b               Platforms to serve (same as positional arguments)
-  --keep                 Stay online for multiple jobs (default: exit after one)
+  --once                 Take one job, then deregister (default: stay online)
   --labels a,b,c         Extra labels in addition to gh-runner and the host label
   --repo OWNER/NAME      Target a specific repo instead of detecting from cwd
   --name NAME            Runner name to register (default: <host>-<pid>)
@@ -100,7 +103,7 @@ IN YOUR WORKFLOW
 
 export function emptyOptions(): RunnerOptions {
   return {
-    keep: false,
+    once: false,
     allowPublic: false,
     repo: undefined,
     labels: [],
@@ -146,8 +149,9 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] as string;
     switch (arg) {
-      case "--keep":
-        options.keep = true;
+      case "--once":
+      case "--ephemeral":
+        options.once = true;
         break;
       case "--allow-public":
         options.allowPublic = true;

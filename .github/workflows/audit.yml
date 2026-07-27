@@ -1,0 +1,55 @@
+name: Audit
+
+# Mondays at noon UTC, plus on demand. A scheduled run that fails silently is
+# no better than no run at all, so a failure opens (or updates) an issue.
+on:
+  schedule:
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    name: better-npm-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Audit dependencies
+        id: audit
+        run: npm run audit | tee audit.log
+        continue-on-error: true
+
+      - name: Open an issue when something turns up
+        if: steps.audit.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Dependency audit found vulnerabilities"
+          existing=$(gh issue list --state open --label security --search "$title" --json number --jq '.[0].number')
+
+          body=$(printf '%s\n\n```\n%s\n```\n\n[Full run](%s)\n' \
+            "The weekly \`better-npm-audit\` run reported vulnerabilities." \
+            "$(tail -c 8000 audit.log)" "$RUN_URL")
+
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh label create security --color d73a4a --description "Dependency vulnerabilities" 2>/dev/null || true
+            gh issue create --title "$title" --label security --body "$body"
+          fi
+
+      - name: Fail the run so the badge reflects reality
+        if: steps.audit.outcome == 'failure'
+        run: exit 1

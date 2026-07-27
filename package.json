@@ -19,11 +19,19 @@
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
     "clean": "turbo run clean",
-    "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "audit": "better-npm-audit audit --level moderate",
+    "verify": "npm run lint && npm run format:check && npm run typecheck && npm run test",
+    "prepare": "husky"
   },
   "devDependencies": {
-    "prettier": "^3.6.2",
+    "better-npm-audit": "^3.11.0",
+    "husky": "^9.1.7",
+    "oxfmt": "^0.60.0",
+    "oxlint": "^1.75.0",
     "turbo": "^2.10.7",
     "typescript": "^7.0.2"
   },

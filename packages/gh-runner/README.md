@@ -7,7 +7,7 @@ cd ~/code/my-repo
 npx gh-runner
 ```
 
-It checks your workflows actually target a self-hosted runner, registers an ephemeral one under the `gh-runner` label, waits for a job, deregisters, and deletes everything it downloaded. Ctrl+C at any point does the same.
+It checks your workflows actually target a self-hosted runner, registers one under the `gh-runner` label, and **stays online for as long as the command runs** — taking job after job. Stop it with Ctrl+C and it deregisters and deletes everything it downloaded.
 
 ## Why
 
@@ -26,11 +26,11 @@ npm install -g gh-runner
 ## Use it
 
 ```bash
-gh-runner                       # pick platforms from a menu, run one job, exit
+gh-runner                       # pick platforms from a menu, stay online until Ctrl+C
 gh-runner linux                 # or just name them
 gh-runner mac linux             # one runner each, in parallel
 gh-runner --all                 # every platform this machine can serve
-gh-runner --keep                # stay online for many jobs until Ctrl+C
+gh-runner --once                # take a single job, then deregister and exit
 gh-runner --labels gpu,cuda-12  # extra labels on top of the defaults
 gh-runner --repo owner/name     # target a repo other than cwd
 ```
@@ -199,7 +199,7 @@ If the branch already exists on the remote, it links the open PR instead of stac
 
 | Option                   | Description                                                     |
 | ------------------------ | --------------------------------------------------------------- |
-| `--keep`                 | Stay online for multiple jobs (default: exit after one)         |
+| `--once`                 | Take one job, then deregister (default: stay online)            |
 | `--labels a,b,c`         | Extra labels on top of the `gh-runner` set and the host label   |
 | `--repo OWNER/NAME`      | Target a specific repo instead of detecting from cwd            |
 | `--name NAME`            | Runner name to register (default: `<host>-<pid>`)               |
@@ -224,7 +224,8 @@ If the branch already exists on the remote, it links the open PR instead of stac
 
 Everything else is designed to leave nothing behind:
 
-- The runner is **ephemeral** by default — GitHub retires it after one job.
+- The runner lives exactly as long as the command: no daemon, no service, nothing that survives the terminal.
+- `--once` registers it as **ephemeral**, so GitHub retires it after a single job.
 - Containerised runners isolate the job from your filesystem entirely: no volumes, no Docker socket, nothing mounted.
 - The working directory is a fresh `mktemp -d`, removed on exit.
 - Deregistration runs on normal exit, on error, and on Ctrl+C.
@@ -258,8 +259,8 @@ The workflow pieces are exported on their own too: `inspectWorkflows`, `parseRun
 2. Resolves the repo from cwd (or `--repo`) and refuses public ones.
 3. Audits `.github/workflows` for a `runs-on` that matches, and offers the PR if none does.
 4. Downloads the matching `actions/runner` release, cached under `${XDG_CACHE_HOME:-~/.cache}/gh-runner`.
-5. Mints a short-lived registration token via the GitHub API and runs `config.sh --ephemeral`.
-6. Runs `run.sh` in the foreground.
+5. Mints a short-lived registration token via the GitHub API and runs `config.sh` (adding `--ephemeral` only for `--once`).
+6. Runs `run.sh` in the foreground, taking jobs until you stop it.
 7. Mints a removal token, runs `config.sh remove`, and deletes the temp directory.
 
 ## License

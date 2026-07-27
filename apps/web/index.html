@@ -6,13 +6,13 @@
     <title>gh-runner — this machine, as a GitHub Actions runner</title>
     <meta
       name="description"
-      content="Temporarily register the machine you're sitting at as an ephemeral GitHub Actions self-hosted runner for the repo you're standing in. One command, no cleanup."
+      content="Temporarily register the machine you're sitting at as a GitHub Actions self-hosted runner for the repo you're standing in. It stays online as long as the command runs, then cleans up after itself."
     />
     <meta name="color-scheme" content="dark light" />
     <meta property="og:title" content="gh-runner" />
     <meta
       property="og:description"
-      content="Temporarily register this machine as a GitHub Actions self-hosted runner. Runs one job, then deregisters and deletes itself."
+      content="Temporarily register this machine as a GitHub Actions self-hosted runner. Stays online while the command runs, then deregisters and deletes itself."
     />
     <meta property="og:type" content="website" />
     <link
@@ -45,12 +45,13 @@
 
     <main id="content">
       <section class="hero wrap">
-        <p class="eyebrow">GitHub Actions · self-hosted · ephemeral</p>
+        <p class="eyebrow">GitHub Actions · self-hosted · disposable</p>
         <h1>Your machine.<br />Their CI.<br /><span class="accent">One command.</span></h1>
         <p class="lede">
           <strong>gh-runner</strong> temporarily registers the computer you're sitting at as a
-          self-hosted runner for the repo you're standing in. It waits for one job, deregisters, and
-          deletes everything it downloaded. Ctrl+C does the same.
+          self-hosted runner for the repo you're standing in. It stays online for as long as the
+          command runs, taking job after job — then deregisters and deletes everything it
+          downloaded.
         </p>
 
         <div class="cta">
@@ -106,7 +107,7 @@
       <span class="c-bold">runs-on: [self-hosted, gh-runner-linux]</span>  <span class="c-dim">Linux only (container)</span>
 
   Repo:   octocat/private-thing
-  Mode:   ephemeral — each exits after one job
+  Mode:   online until you stop the command (Ctrl+C)
 
   <span class="c-dim">Ctrl+C to stop and deregister.</span>
 
@@ -115,6 +116,9 @@
 <span class="c-dim">[Linux] √ Connected to GitHub. Listening for Jobs...</span>
 <span class="c-dim">[macOS] Running job: build</span>
 <span class="c-dim">[macOS]</span> <span class="c-green">√ build</span> completed with result: Succeeded
+<span class="c-dim">[macOS] √ Listening for Jobs...</span>
+<span class="c-dim">^C</span>
+<span class="c-bold">==&gt;</span> Deregistering runners...
 <span class="c-bold">==&gt;</span> <span class="c-green">Done.</span> Nothing left registered, nothing left on disk.</code></pre>
         </div>
       </section>
@@ -256,7 +260,7 @@
             </p>
           </li>
           <li>
-            <h3>Registers ephemerally</h3>
+            <h3>Registers a runner</h3>
             <p>
               Mints a short-lived registration token and configures the runner in a fresh temp
               directory under the <code>gh-runner</code> label.
@@ -273,7 +277,7 @@
             <h3>Cleans up after itself</h3>
             <p>
               Deregisters and deletes the temp directory — on success, on failure, and on Ctrl+C.
-              GitHub retires an ephemeral runner after a single job regardless.
+              Nothing survives the command: no daemon, no service, no leftover registration.
             </p>
           </li>
         </ol>
@@ -462,8 +466,8 @@ Update 3 jobs to runs-on: [self-hosted, gh-runner] and open a pull request? <spa
             </thead>
             <tbody>
               <tr>
-                <td><code>--keep</code></td>
-                <td>Stay online for multiple jobs instead of exiting after one</td>
+                <td><code>--once</code></td>
+                <td>Take one job, then deregister (default: stay online)</td>
               </tr>
               <tr>
                 <td><code>--labels a,b,c</code></td>
@@ -545,7 +549,10 @@ Update 3 jobs to runs-on: [self-hosted, gh-runner] and open a pull request? <spa
           </p>
         </div>
         <ul class="checklist">
-          <li><strong>Ephemeral by default</strong> — GitHub retires the runner after one job.</li>
+          <li>
+            <strong>Lives with the command</strong> — stop the command and the runner is gone;
+            <code>--once</code> makes it ephemeral so GitHub retires it after a single job.
+          </li>
           <li>
             <strong>Fresh temp directory</strong> — the runner's work tree is created with
             <code>mktemp -d</code> and removed on exit.

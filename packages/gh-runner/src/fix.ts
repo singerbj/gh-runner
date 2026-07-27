@@ -102,7 +102,7 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
       await writeFile(path, applyRunsOnFix(source, targets, label));
     }
 
-    const files = [...byFile.keys()].sort();
+    const files = [...byFile.keys()].toSorted();
     const jobs = wanted.map((target) => ({ file: target.file, job: target.job }));
 
     await git(["add", "--", ...files], { cwd: worktree });

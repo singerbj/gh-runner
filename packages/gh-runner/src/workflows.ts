@@ -221,7 +221,7 @@ export async function listWorkflowFiles(repoRoot: string): Promise<string[] | nu
         (entry) => entry.isFile() && WORKFLOW_EXTENSIONS.some((ext) => entry.name.endsWith(ext)),
       )
       .map((entry) => entry.name)
-      .sort();
+      .toSorted();
   } catch {
     return null;
   }
@@ -309,7 +309,8 @@ export function applyRunsOnFix(
   targets: readonly RunsOnTarget[],
   label: string,
 ): string {
-  const ordered = [...targets].sort((a, b) => b.range[0] - a.range[0]);
+  // Back to front, so an earlier splice can't shift a later target's offsets.
+  const ordered = targets.toSorted((a, b) => b.range[0] - a.range[0]);
   let output = source;
 
   for (const target of ordered) {

@@ -83,25 +83,36 @@ describe("ghRunner", () => {
     expect(only?.mode).toBe("native");
     expect(only?.platform).toEqual(LINUX);
     expect(only?.labels).toEqual(["gh-runner", "gh-runner-linux", only?.hostLabel, "gpu"]);
-    expect(only?.ephemeral).toBe(true);
+    expect(only?.ephemeral).toBe(false);
 
     const config = calls.find((c) => c.command.endsWith("config.sh"));
-    expect(config?.args).toContain("--ephemeral");
     expect(config?.args).toContain("REG123");
     expect(calls.some((c) => c.command.endsWith("run.sh"))).toBe(true);
     // Docker is never probed when only the host platform is wanted.
     expect(calls.some((c) => c.command === "docker")).toBe(false);
   });
 
-  it("drops --ephemeral when --keep is set", async () => {
+  it("stays online for the life of the command by default", async () => {
     const { runner, calls } = stubRunner();
     const { runners } = await ghRunner(
-      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir, keep: true },
+      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
       base(runner),
     );
 
     expect(runners[0]?.ephemeral).toBe(false);
+    // No --ephemeral means GitHub keeps handing it jobs until run.sh stops.
     expect(calls.find((c) => c.command.endsWith("config.sh"))?.args).not.toContain("--ephemeral");
+  });
+
+  it("registers an ephemeral runner with --once", async () => {
+    const { runner, calls } = stubRunner();
+    const { runners } = await ghRunner(
+      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir, once: true },
+      base(runner),
+    );
+
+    expect(runners[0]?.ephemeral).toBe(true);
+    expect(calls.find((c) => c.command.endsWith("config.sh"))?.args).toContain("--ephemeral");
   });
 
   it("refuses a public repo unless --allow-public is passed", async () => {
@@ -172,7 +183,7 @@ describe("platform selection", () => {
       base(runner, MAC),
     );
 
-    expect(runners.map((r) => [r.platform.os, r.mode]).sort()).toEqual([
+    expect(runners.map((r) => [r.platform.os, r.mode]).toSorted()).toEqual([
       ["linux", "docker"],
       ["osx", "native"],
     ]);
@@ -194,7 +205,7 @@ describe("platform selection", () => {
       base(runner, MAC),
     );
     // A Mac can serve macOS and, via Docker, Linux — but not Windows.
-    expect(runners.map((r) => r.platform.os).sort()).toEqual(["linux", "osx"]);
+    expect(runners.map((r) => r.platform.os).toSorted()).toEqual(["linux", "osx"]);
   });
 
   it("--all on a host with no Docker falls back to the host alone", async () => {

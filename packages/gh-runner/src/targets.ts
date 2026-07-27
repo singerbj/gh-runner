@@ -57,30 +57,36 @@ export function planOptions(input: PlanInput): PlatformOption[] {
   const dockerReason = input.dockerReason ?? "Docker isn't available";
 
   return TARGET_ORDER.map((os): PlatformOption => {
-    const base = { os, name: OS_NAMES[os], label: osLabel(os) };
+    const name = OS_NAMES[os];
+    const label = osLabel(os);
 
     if (os === hostOs && !(os === "linux" && preferDocker)) {
-      return { ...base, mode: "native", detail: "native — this machine", available: true };
+      return { os, name, label, mode: "native", detail: "native — this machine", available: true };
     }
 
     if (os === "linux") {
-      return dockerReady
-        ? {
-            ...base,
-            mode: "docker",
-            detail: hostOs === "linux" ? "in a container" : "in a container, via Docker",
-            available: true,
-          }
-        : { ...base, mode: null, detail: dockerReason, available: false };
+      if (!dockerReady) {
+        return { os, name, label, mode: null, detail: dockerReason, available: false };
+      }
+      return {
+        os,
+        name,
+        label,
+        mode: "docker",
+        detail: hostOs === "linux" ? "in a container" : "in a container, via Docker",
+        available: true,
+      };
     }
 
     return {
-      ...base,
+      os,
+      name,
+      label,
       mode: null,
       detail:
         os === "osx"
-          ? `needs a ${OS_NAMES[os]} machine — macOS can't be containerised`
-          : `needs a ${OS_NAMES[os]} machine — Windows containers only run on Windows`,
+          ? `needs a ${name} machine — macOS can't be containerised`
+          : `needs a ${name} machine — Windows containers only run on Windows`,
       available: false,
     };
   });

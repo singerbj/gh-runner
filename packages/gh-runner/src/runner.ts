@@ -292,7 +292,9 @@ export async function ghRunner(
       "",
       `  Repo:   ${repo}`,
       `  Mode:   ${
-        options.keep ? "staying online until you Ctrl+C" : `ephemeral — each exits after one job`
+        options.once
+          ? "ephemeral — each exits after one job"
+          : "online until you stop the command (Ctrl+C)"
       }`,
       "",
       `  ${dim("Ctrl+C to stop and deregister.")}`,
@@ -482,7 +484,7 @@ async function runNativeTarget(run: TargetRun & { runnerVersion: string }): Prom
       "--work",
       "_work",
     ];
-    if (!options.keep) configArgs.push("--ephemeral");
+    if (options.once) configArgs.push("--ephemeral");
 
     say("Registering...");
     const config = runnerCommand(platform, runnerDir, "config", configArgs, env);
@@ -525,7 +527,7 @@ async function runNativeTarget(run: TargetRun & { runnerVersion: string }): Prom
     runnerVersion: run.runnerVersion,
     platform,
     mode: "native",
-    ephemeral: !options.keep,
+    ephemeral: options.once,
   };
 }
 
@@ -559,7 +561,7 @@ async function runDockerTarget(run: TargetRun): Promise<RunSummary> {
         containerName,
         runnerName: plan.runnerName,
         labels: plan.labels,
-        ephemeral: !options.keep,
+        ephemeral: options.once,
         registrationToken,
       },
       run.onRunnerSpawn,
@@ -582,7 +584,7 @@ async function runDockerTarget(run: TargetRun): Promise<RunSummary> {
     runnerVersion: "container",
     platform: plan.platform,
     mode: "docker",
-    ephemeral: !options.keep,
+    ephemeral: options.once,
   };
 }
 

@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   verify:
-    name: Typecheck, test, build
+    name: Lint, format, audit, typecheck, test, build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -27,8 +27,14 @@ jobs:
 
       - run: npm ci
 
+      - name: Lint
+        run: npm run lint
+
       - name: Check formatting
         run: npm run format:check
+
+      - name: Audit dependencies
+        run: npm run audit
 
       - name: Typecheck
         run: npx turbo run typecheck

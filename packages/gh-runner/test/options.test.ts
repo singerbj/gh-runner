@@ -3,10 +3,10 @@ import { CliError } from "../src/errors.js";
 import { parseArgs, parseLabels } from "../src/options.js";
 
 describe("parseArgs", () => {
-  it("defaults to a single ephemeral job on the detected repo", () => {
+  it("defaults to staying online on the detected repo", () => {
     const { kind, options } = parseArgs([]);
     expect(kind).toBe("run");
-    expect(options.keep).toBe(false);
+    expect(options.once).toBe(false);
     expect(options.allowPublic).toBe(false);
     expect(options.repo).toBeUndefined();
     expect(options.labels).toEqual([]);
@@ -14,7 +14,7 @@ describe("parseArgs", () => {
 
   it("reads every long option", () => {
     const { options } = parseArgs([
-      "--keep",
+      "--once",
       "--allow-public",
       "--repo",
       "octocat/hello-world",
@@ -28,7 +28,7 @@ describe("parseArgs", () => {
       "/tmp/cache",
     ]);
 
-    expect(options.keep).toBe(true);
+    expect(options.once).toBe(true);
     expect(options.allowPublic).toBe(true);
     expect(options.repo).toBe("octocat/hello-world");
     expect(options.labels).toEqual(["gpu", "macos"]);
@@ -52,7 +52,7 @@ describe("parseArgs", () => {
 
   it("rejects a flag whose value is missing", () => {
     expect(() => parseArgs(["--repo"])).toThrow(/--repo needs a value/);
-    expect(() => parseArgs(["--labels", "--keep"])).toThrow(/--labels needs a value/);
+    expect(() => parseArgs(["--labels", "--once"])).toThrow(/--labels needs a value/);
   });
 
   it("rejects a repo that is not OWNER/NAME", () => {

@@ -48,6 +48,20 @@ export function detectPlatform(
   return { os, arch: runnerArch };
 }
 
+/** A runner version, as it appears in an `actions/runner` tag minus the `v`. */
+const VERSION_PATTERN = /^[0-9]+(\.[0-9]+){0,3}$/;
+
+/**
+ * Guards the two places a version becomes a URL: the release asset download and
+ * the API path its checksum is looked up on.
+ */
+export function assertRunnerVersion(version: string): string {
+  if (!VERSION_PATTERN.test(version)) {
+    throw new CliError(`--runner-version expects a version like 2.334.0, got: ${version}`);
+  }
+  return version;
+}
+
 /** actions/runner ships Windows as a .zip and everything else as a .tar.gz. */
 export function runnerArchive(platform: RunnerPlatform, version: string): string {
   const extension = platform.os === "win" ? "zip" : "tar.gz";

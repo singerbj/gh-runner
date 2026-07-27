@@ -3,6 +3,7 @@ export interface Styles {
   dim: (s: string) => string;
   red: (s: string) => string;
   green: (s: string) => string;
+  yellow: (s: string) => string;
 }
 
 const wrap = (open: string, close: string) => (s: string) => `${open}${s}${close}`;
@@ -10,13 +11,14 @@ const plain = (s: string) => s;
 
 export function createStyles(color: boolean): Styles {
   if (!color) {
-    return { bold: plain, dim: plain, red: plain, green: plain };
+    return { bold: plain, dim: plain, red: plain, green: plain, yellow: plain };
   }
   return {
     bold: wrap("\u001b[1m", "\u001b[0m"),
     dim: wrap("\u001b[2m", "\u001b[0m"),
     red: wrap("\u001b[31m", "\u001b[0m"),
     green: wrap("\u001b[32m", "\u001b[0m"),
+    yellow: wrap("\u001b[33m", "\u001b[0m"),
   };
 }
 
@@ -26,6 +28,8 @@ export interface Logger {
   say(message: string): void;
   /** Raw text, already formatted by the caller. */
   raw(message: string): void;
+  /** Something the user should weigh, but which isn't fatal. */
+  warn(message: string): void;
   error(message: string): void;
 }
 
@@ -48,6 +52,9 @@ export function createLogger(options: LoggerOptions = {}): Logger {
     raw(message) {
       write(message);
     },
+    warn(message) {
+      write(`${styles.yellow("warning:")} ${message}\n`);
+    },
     error(message) {
       write(`${styles.red("error:")} ${message}\n`);
     },
@@ -59,5 +66,6 @@ export const silentLogger: Logger = {
   styles: createStyles(false),
   say() {},
   raw() {},
+  warn() {},
   error() {},
 };

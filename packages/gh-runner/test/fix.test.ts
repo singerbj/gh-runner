@@ -178,6 +178,18 @@ describe("proposeWorkflowFix", () => {
     expect(body).toContain("was `macos-14`");
   });
 
+  it("refuses a label that would write something other than a runs-on", async () => {
+    // The label is spliced into YAML that becomes a commit, so a `]` or a
+    // newline in it would close the sequence and write arbitrary keys. parseArgs
+    // catches this for the CLI; this is the library door onto the same splice.
+    for (const label of ["evil]\njobs: pwned", "gh runner", "-leading-dash", ""]) {
+      await expect(propose({ label })).rejects.toThrow(CliError);
+    }
+
+    // Nothing was pushed for any of them.
+    expect(git(checkout, "ls-remote", "--heads", "origin")).not.toContain("target-self-hosted");
+  });
+
   it("lets --fix-label override the per-job choice", async () => {
     await commitWorkflow(MIXED_WORKFLOW);
 

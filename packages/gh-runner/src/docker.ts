@@ -74,6 +74,28 @@ export function containerScript(ephemeral: boolean): string {
   return `set -e; ${config}; ./run.sh`;
 }
 
+/**
+ * The environment the `docker` client is spawned with, carrying the values
+ * {@link dockerRunArgs} forwards by name.
+ *
+ * The registration token lives here rather than in the argv `docker` is spawned
+ * with, because argv is world-readable: `ps` and `/proc/<pid>/cmdline` would
+ * hand a live token to every other account on the machine for as long as the
+ * container runs.
+ */
+export function dockerRunEnv(
+  options: DockerRunOptions,
+  base: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  return {
+    ...base,
+    GHR_URL: `https://github.com/${options.repo}`,
+    GHR_TOKEN: options.registrationToken,
+    GHR_NAME: options.runnerName,
+    GHR_LABELS: options.labels.join(","),
+  };
+}
+
 export function dockerRunArgs(options: DockerRunOptions): string[] {
   const args = ["run", "--rm", "--name", options.containerName];
 
@@ -82,14 +104,16 @@ export function dockerRunArgs(options: DockerRunOptions): string[] {
   }
 
   args.push(
+    // Name-only `-e` forwards the value from the client's own environment; see
+    // dockerRunEnv. Nothing the API handed us appears on this command line.
     "-e",
-    `GHR_URL=https://github.com/${options.repo}`,
+    "GHR_URL",
     "-e",
-    `GHR_TOKEN=${options.registrationToken}`,
+    "GHR_TOKEN",
     "-e",
-    `GHR_NAME=${options.runnerName}`,
+    "GHR_NAME",
     "-e",
-    `GHR_LABELS=${options.labels.join(",")}`,
+    "GHR_LABELS",
     // Custom images sometimes run as root, which the runner refuses by default.
     "-e",
     "RUNNER_ALLOW_RUNASROOT=1",
@@ -110,8 +134,10 @@ export async function runInDocker(
   options: DockerRunOptions,
   onSpawn?: SpawnHook,
   prefix?: string,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<number> {
   const result = await runner("docker", dockerRunArgs(options), {
+    env: dockerRunEnv(options, env),
     ...(prefix ? { prefix } : { inherit: true }),
     ...(onSpawn ? { onSpawn } : {}),
   });

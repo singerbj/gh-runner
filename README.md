@@ -56,6 +56,8 @@ It's installed by `npm install` via the `prepare` script. The audit needs the ne
 
 The repo is a [Turborepo](https://turborepo.com); each task above fans out to the workspaces that define it, with caching between runs.
 
+**Every action is pinned to a commit SHA**, with the version it came from in a trailing comment. A tag is a mutable pointer — `@v5` is whatever `actions/checkout` last pushed there, and a compromised or repointed tag would run in a job that can push to `main` and publish to npm. A SHA can't move. [Dependabot](.github/dependabot.yml) opens a weekly PR to move them deliberately, since a pin that nobody updates is its own kind of stale.
+
 ### Trying the CLI locally
 
 ```bash
@@ -86,6 +88,8 @@ Either way, merges afterwards resume at the patch: `1.1.0`, then `1.1.1`, `1.1.2
 
 Nothing reads commit messages. An earlier version of this workflow looked for a `[major]` keyword, and the very commit that documented the keyword tripped it — `0.1.0` published as `1.0.0`. A release trigger you can't write about is a bad trigger.
 
+It runs as three jobs, and the split is the point. `npm ci` and the test suite execute a few hundred third-party packages' code, and `NPM_TOKEN` would be readable by any one of them if it shared a job with them. So **`build` has no secrets**, and **`publish` installs nothing** — it publishes the tarball `build` already packed, which runs no lifecycle scripts. `token` goes first and does nothing but check the secret isn't empty, so a missing one fails in seconds instead of after a full build.
+
 Only changes under `packages/gh-runner` (plus `package-lock.json`) trigger a release, so landing work on the landing page or the root README mints nothing. The bump commit is pushed with `GITHUB_TOKEN`, which by design starts no further workflow runs — a release can't set off another release.
 
 **If `main` is protected**, allow the GitHub Actions bot to push to it, or the workflow stops before publishing and says so. Bumping the manifest by hand in the PR is the way through otherwise.
@@ -105,6 +109,10 @@ The workflow checks the secret exists before building the tarball, and translate
 Once Pages is on, the site lands at **https://singerbj.github.io/gh-runner/**.
 
 The Vite build uses a relative `base`, so the same output works at a domain root or under a `/gh-runner/` project path without reconfiguration.
+
+## Security
+
+`gh-runner` hands a CI job the machine it runs on, so it has a threat model worth reading: [`SECURITY.md`](SECURITY.md) covers what it guarantees, what it deliberately doesn't, and where to report a vulnerability.
 
 ## License
 

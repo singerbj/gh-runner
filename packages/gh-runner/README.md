@@ -207,32 +207,43 @@ If the branch already exists on the remote, it links the open PR instead of stac
 
 ### Options
 
-| Option                   | Description                                                     |
-| ------------------------ | --------------------------------------------------------------- |
-| `--once`, `--ephemeral`  | Take one job, then deregister (default: stay online)            |
-| `--labels a,b,c`         | Extra labels on top of the `gh-runner` set and the host label   |
-| `--repo OWNER/NAME`      | Target a specific repo instead of detecting from cwd            |
-| `--name NAME`            | Runner name to register (default: `<host>-<pid>`)               |
-| `--allow-public`         | Permit registration on a public repo (**dangerous**, see below) |
-| `--all`                  | Serve every platform this machine can                           |
-| `--os a,b`, `--platform` | Platforms to serve (same as positional arguments)               |
-| `--docker-image IMAGE`   | Image for containerised runners (default GitHub's runner image) |
-| `--docker-platform P`    | Container platform, e.g. `linux/amd64`                          |
-| `--runner-version X.Y.Z` | Pin the runner version (default: latest release)                |
-| `--cache-dir PATH`       | Where to cache runner tarballs                                  |
-| `--no-workflow-check`    | Skip the `runs-on` audit of `.github/workflows`                 |
-| `--fix-workflows`        | Open the workflow PR without asking first                       |
-| `--no-fix-workflows`     | Never offer to open it                                          |
-| `--fix-jobs a,b`         | Limit the fix to these job ids                                  |
-| `--fix-label LABEL`      | Force one label on every job the fix PR rewrites                |
-| `-h, --help`             | Show help                                                       |
-| `-v, --version`          | Show version                                                    |
+| Option                   | Description                                                       |
+| ------------------------ | ----------------------------------------------------------------- |
+| `--once`, `--ephemeral`  | Take one job, then deregister (default: stay online)              |
+| `--labels a,b,c`         | Extra labels on top of the `gh-runner` set and the host label     |
+| `--repo OWNER/NAME`      | Target a specific repo instead of detecting from cwd              |
+| `--name NAME`            | Runner name to register (default: `<host>-<pid>`)                 |
+| `--allow-public`         | Register even if the repo isn't confirmed private (**dangerous**) |
+| `--all`                  | Serve every platform this machine can                             |
+| `--os a,b`, `--platform` | Platforms to serve (same as positional arguments)                 |
+| `--docker-image IMAGE`   | Image for containerised runners (default GitHub's runner image)   |
+| `--docker-platform P`    | Container platform, e.g. `linux/amd64`                            |
+| `--runner-version X.Y.Z` | Pin the runner version (default: latest release)                  |
+| `--cache-dir PATH`       | Where to cache runner tarballs                                    |
+| `--no-workflow-check`    | Skip the `runs-on` audit of `.github/workflows`                   |
+| `--fix-workflows`        | Open the workflow PR without asking first                         |
+| `--no-fix-workflows`     | Never offer to open it                                            |
+| `--fix-jobs a,b`         | Limit the fix to these job ids                                    |
+| `--fix-label LABEL`      | Force one label on every job the fix PR rewrites                  |
+| `-h, --help`             | Show help                                                         |
+| `-v, --version`          | Show version                                                      |
 
 ## Safety
 
-**Public repos are refused by default.** On a public repo, anyone can open a pull request, and a workflow that runs on `pull_request` would execute their code on your machine with your user's privileges. `--allow-public` exists as an escape hatch for repos where you trust every contributor who can open a PR — reach for it deliberately.
+**A native runner executes CI jobs as you.** Not sandboxed, not a separate account: whoever can cause a job to run on the `gh-runner` label gets your shell, your home directory, your SSH keys, and your `gh` login for as long as the command is up. Everything below follows from that.
 
-Everything else is designed to leave nothing behind:
+**Repos that aren't confirmed private are refused.** On a public repo anyone can open a pull request, and a workflow that runs on `pull_request` would run their code here. If `gh` can't tell us the visibility at all — logged out, rate-limited, offline — that is treated the same way, because an unanswered question is not a "no". `--allow-public` overrides both, and is for repos where you trust every contributor who can open a PR. Reach for it deliberately.
+
+**Private is not the same as safe.** Every collaborator who can push a branch or open a PR on a private repo can also run code on your machine while a runner is up. The blast radius is your whole user account, so match the runner to how much you'd trust each of those people at your keyboard. `--docker`-backed Linux runners are the way to keep a job off your filesystem.
+
+The runner itself is checked before it is trusted:
+
+- The `actions/runner` tarball is verified against the SHA-256 GitHub publishes for that release, **before** it is unpacked — on a cache hit as much as on a fresh download, since the cache directory is an ordinary writable path. A mismatch stops the run; a release with no published checksum warns rather than pretending.
+- The registration token is passed to Docker through the environment, never on the command line, where `ps` and `/proc/<pid>/cmdline` would show it to every other account on the machine.
+- Commands are spawned without a shell, so tokens and repo names can't be re-read as shell syntax.
+- Your credentials stay in `gh`; this tool never handles a long-lived token.
+
+And nothing is left behind:
 
 - The runner lives exactly as long as the command: no daemon, no service, nothing that survives the terminal.
 - `--once` registers it as **ephemeral**, so GitHub retires it after a single job.
@@ -240,8 +251,11 @@ Everything else is designed to leave nothing behind:
 - A native runner's working directory is a fresh `mktemp -d`, removed on exit; a containerised one writes nothing to the host at all.
 - Deregistration runs on normal exit, on error, and on Ctrl+C.
 - The workflow fix runs in a disposable worktree and never writes to your checkout.
-- Your credentials stay in `gh`; this tool never handles a long-lived token.
-- Commands are spawned without a shell, so tokens and repo names can't be re-read as shell syntax.
+
+### Known limits
+
+- **`config.sh --token` puts the registration token in argv.** The native path has no other way to pass it, so on a shared machine another local account can read it for the second or two registration takes. It expires in an hour and only ever grants "register a runner on this repo". The container path doesn't have this problem.
+- **A job is only as isolated as the mode you chose.** Native means none.
 
 ## Programmatic use
 
@@ -266,11 +280,11 @@ The workflow pieces are exported on their own too: `inspectWorkflows`, `parseRun
 ## How it works
 
 1. Checks `gh` is installed and authenticated.
-2. Resolves the repo from cwd (or `--repo`) and refuses public ones.
+2. Resolves the repo from cwd (or `--repo`) and refuses any it can't confirm is private.
 3. Works out which platforms this machine can serve — probing Docker only if something other than the host OS is in play — then takes them from the arguments, the menu, or the single possible answer.
 4. Audits `.github/workflows` for a `runs-on` that matches any of the chosen runners, and offers the PR if none does.
 5. Starts one runner per platform, in parallel:
-   - **Native** — downloads the matching `actions/runner` release (cached under `${XDG_CACHE_HOME:-~/.cache}/gh-runner`), unpacks it into a fresh temp directory, mints a short-lived registration token, and runs `config.sh` then `run.sh`.
+   - **Native** — downloads the matching `actions/runner` release (cached under `${XDG_CACHE_HOME:-~/.cache}/gh-runner`), checks it against the SHA-256 that release publishes, unpacks it into a fresh temp directory, mints a short-lived registration token, and runs `config.sh` then `run.sh`.
    - **Container** — mints the same kind of token and runs GitHub's runner image, passing every value in through the environment. Nothing touches the host disk.
 6. Keeps them online, taking jobs, until you stop the command. `--once` adds `--ephemeral` so each retires after a single job instead.
 7. Cleans up on every exit path: native runners run `config.sh remove` and lose their temp directory; containers are force-removed and deregistered through the API, since `config.sh` is gone with the container.

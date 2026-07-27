@@ -1,0 +1,19 @@
+version: 2
+
+# The workflows pin every action to a commit SHA, which is the only form a tag
+# can't be moved out from under. The cost is that a pinned SHA never updates
+# itself, so security fixes to the actions would sit unnoticed. This is what
+# moves them: Dependabot opens a PR with the new SHA and the version comment
+# rewritten to match, and CI decides whether it lands.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: Bump
+    groups:
+      # One PR for the lot. These move together and are reviewed together.
+      actions:
+        patterns: ["*"]

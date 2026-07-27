@@ -8,6 +8,7 @@ import { CommandFailedError, execCapture } from "./exec.js";
 import type { CommandRunner, ExecOptions } from "./exec.js";
 import type { GhClient } from "./gh.js";
 import type { Logger } from "./logger.js";
+import { assertLabel } from "./options.js";
 import { applyRunsOnFix, hostedRunnerOs, inspectWorkflows } from "./workflows.js";
 import type { RunsOnTarget } from "./workflows.js";
 
@@ -86,7 +87,12 @@ export type WorkflowFixResult =
  */
 export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<WorkflowFixResult> {
   const { repo, repoRoot, commandRunner, gh, logger, signal } = options;
-  const labelFor = (target: RunsOnTarget) => fixLabelFor(target, options.label);
+  // An override is spliced into YAML that becomes a commit, so it gets checked
+  // here as well as in parseArgs — this is a public entry point too. Left unset
+  // the label comes from osLabel/DEFAULT_LABEL, which are ours already.
+  const override =
+    options.label === undefined ? undefined : assertLabel("--fix-label", options.label);
+  const labelFor = (target: RunsOnTarget) => fixLabelFor(target, override);
   const runId = randomBytes(4).toString("hex");
   const branch = options.branch ?? `${FIX_BRANCH_PREFIX}-${runId}`;
   const exec: ExecOptions = { cwd: repoRoot, ...(signal ? { signal } : {}) };
@@ -132,7 +138,7 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
     // Re-scan inside the worktree: the user's working copy may be ahead of, or
     // behind, the branch the PR is actually built on. Only `hosted` is used, and
     // that verdict doesn't depend on the label set we pass.
-    const report = await inspectWorkflows(worktree, [[options.label ?? DEFAULT_LABEL]]);
+    const report = await inspectWorkflows(worktree, [[override ?? DEFAULT_LABEL]]);
     const wanted = options.jobs?.length
       ? report.hosted.filter((target) => options.jobs?.includes(target.job))
       : report.hosted;

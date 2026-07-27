@@ -10,6 +10,13 @@ name: Release
 # Nothing here reads commit messages. An earlier version looked for a keyword,
 # and the commit that documented the keyword tripped it — 0.1.0 went straight
 # to 1.0.0.
+#
+# Three jobs, and the split is deliberate. `npm ci` and the test suite execute
+# a few hundred third-party packages' code; NPM_TOKEN would be readable by any
+# one of them if it shared a job with them. So the job that runs that code has
+# no secrets, and the job that holds the token installs nothing — it publishes
+# a tarball the build already produced. `token` runs first so a missing secret
+# fails in seconds rather than after a full build.
 on:
   push:
     branches: [main]
@@ -32,31 +39,53 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  # The bump commit goes back to main, and the release is cut from it.
-  contents: write
-  # Required for npm provenance attestations.
-  id-token: write
+  contents: read
 
 jobs:
-  publish:
-    name: Publish to npm
+  # Nothing but a test for emptiness. Without this, a missing secret surfaces as
+  # `npm error code ENEEDAUTH` after a full build — technically accurate,
+  # useless as a next step.
+  token:
+    name: Check the npm token exists
     runs-on: ubuntu-latest
     # Belt and braces: a push made with GITHUB_TOKEN doesn't trigger workflows,
     # so the bump commit can't start a second release — but if that ever
     # changes, this is what stops the loop.
     if: ${{ !contains(github.event.head_commit.message, '[skip release]') }}
     steps:
-      - uses: actions/checkout@v5
-        with:
-          # The bump commit is pushed back to main, which a shallow clone can't
-          # do.
-          fetch-depth: 0
+      - name: Is NPM_TOKEN set?
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "NPM_TOKEN is set."
+            exit 0
+          fi
+          echo "::error::NPM_TOKEN isn't set, so nothing can be published."
+          echo "Create an npm automation token with publish rights, then add it"
+          echo "at Settings -> Secrets and variables -> Actions -> New repository"
+          echo "secret, named NPM_TOKEN. Re-run this workflow afterwards."
+          exit 1
 
-      - uses: actions/setup-node@v5
+  # Runs every dependency's code, and therefore holds no secrets at all.
+  build:
+    name: Verify and pack
+    needs: token
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      name: ${{ steps.version.outputs.name }}
+      version: ${{ steps.version.outputs.version }}
+      bumped: ${{ steps.version.outputs.bumped }}
+      tarball: ${{ steps.pack.outputs.tarball }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: npm
-          registry-url: https://registry.npmjs.org
 
       - run: npm ci
 
@@ -118,30 +147,79 @@ jobs:
           echo "version=$next" >> "$GITHUB_OUTPUT"
           echo "bumped=true" >> "$GITHUB_OUTPUT"
 
-      # Without this, a missing secret surfaces as `npm error code ENEEDAUTH`
-      # after a full build — technically accurate, useless as a next step.
-      - name: Check the npm token exists
+      # The exact bytes that will be published. Building the tarball here rather
+      # than in the publish job is the point of the split: `npm publish <file>`
+      # runs no lifecycle scripts, so nothing third-party executes next to the
+      # token.
+      - name: Pack the tarball
+        id: pack
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PACKAGE: ${{ steps.version.outputs.name }}
         run: |
-          if [ -n "$NPM_TOKEN" ]; then
-            echo "NPM_TOKEN is set."
-            exit 0
+          set -euo pipefail
+          mkdir -p release-artifacts
+          npm pack --workspace "$PACKAGE" --pack-destination release-artifacts > /dev/null
+
+          count=$(find release-artifacts -maxdepth 1 -name '*.tgz' | wc -l)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected exactly one tarball, found $count."
+            exit 1
           fi
-          echo "::error::NPM_TOKEN isn't set, so ${{ steps.version.outputs.name }}@${{ steps.version.outputs.version }} can't be published."
-          echo "Create an npm automation token with publish rights, then add it"
-          echo "at Settings -> Secrets and variables -> Actions -> New repository"
-          echo "secret, named NPM_TOKEN. Re-run this workflow afterwards."
-          exit 1
+          tarball=$(basename "$(find release-artifacts -maxdepth 1 -name '*.tgz')")
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "Packed $tarball"
+
+          # The bumped manifests travel with it: the publish job commits them to
+          # main, and it has no node_modules to regenerate them from.
+          cp packages/gh-runner/package.json release-artifacts/package.json
+          cp package-lock.json release-artifacts/package-lock.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-artifacts
+          path: release-artifacts/
+          retention-days: 7
+
+  # Holds NPM_TOKEN and contents: write. Installs nothing, builds nothing, and
+  # runs no code from the dependency tree — only the pinned actions above and
+  # npm's own publish.
+  publish:
+    name: Publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      # The bump commit goes back to main, and the release is cut from it.
+      contents: write
+      # Required for npm provenance attestations.
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # The bump commit is pushed back to main, which a shallow clone can't
+          # do.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-artifacts
+          path: release-artifacts
 
       # Pushed before the publish, so the two can't disagree: if npm then fails,
       # main already carries the version and re-running publishes it as-is.
       - name: Commit the bump to main
-        if: steps.version.outputs.bumped == 'true'
+        if: needs.build.outputs.bumped == 'true'
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
+          cp release-artifacts/package.json packages/gh-runner/package.json
+          cp release-artifacts/package-lock.json package-lock.json
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add packages/gh-runner/package.json package-lock.json
@@ -163,14 +241,17 @@ jobs:
         continue-on-error: true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TARBALL: ${{ needs.build.outputs.tarball }}
         run: |
           set -o pipefail
-          npm publish --workspace @singerbj/gh-runner --provenance --access public 2>&1 | tee publish.log
+          npm publish "release-artifacts/$TARBALL" --provenance --access public 2>&1 | tee publish.log
 
       # npm's failures here are accurate and unhelpful in equal measure, and the
       # 403 in particular has a non-obvious cause worth naming.
       - name: Explain a publish failure
         if: steps.publish.outcome == 'failure'
+        env:
+          PACKAGE: ${{ needs.build.outputs.name }}
         run: |
           if grep -q "E403" publish.log; then
             echo "::error::npm refused the publish with 403 Forbidden."
@@ -192,14 +273,14 @@ jobs:
             echo "     or Trusted Publishing to the now-existing package."
             echo
             echo "Also check the name is free and the account is allowed to publish"
-            echo "it: https://www.npmjs.com/package/${{ steps.version.outputs.name }}"
+            echo "it: https://www.npmjs.com/package/$PACKAGE"
           fi
           exit 1
 
       - name: Tag the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: v${{ steps.version.outputs.version }}
+          TAG: v${{ needs.build.outputs.version }}
         run: |
           if gh release view "$TAG" > /dev/null 2>&1; then
             echo "Release $TAG already exists."

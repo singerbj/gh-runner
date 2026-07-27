@@ -1,6 +1,6 @@
 {
   "name": "@singerbj/gh-runner",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Temporarily register this machine as an ephemeral GitHub Actions self-hosted runner for the repo you're standing in.",
   "keywords": [
     "github",

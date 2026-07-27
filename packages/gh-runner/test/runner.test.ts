@@ -63,7 +63,7 @@ describe("ghRunner", () => {
 
     expect(summary.repo).toBe("octocat/private-thing");
     expect(summary.ephemeral).toBe(true);
-    expect(summary.labels).toEqual(["gh-runner", summary.hostLabel, "gpu"]);
+    expect(summary.labels).toEqual(["gh-runner", "gh-runner-linux", summary.hostLabel, "gpu"]);
     expect(summary.runnerName).toBe(`${summary.hostLabel}-${process.pid}`);
 
     const config = calls.find((c) => c.command.endsWith("config.sh"));

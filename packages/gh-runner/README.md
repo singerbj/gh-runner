@@ -32,35 +32,44 @@ gh-runner --labels gpu,cuda-12  # extra labels on top of the defaults
 gh-runner --repo owner/name     # target a repo other than cwd
 ```
 
-Every runner registers under the same label, so `runs-on` is a stable contract in your YAML no matter whose machine is standing in:
+Every runner registers under the same set of labels, so `runs-on` is a stable contract in your YAML no matter whose machine is standing in:
+
+| Label               | Registered on    | Use it when                           |
+| ------------------- | ---------------- | ------------------------------------- |
+| `gh-runner`         | every machine    | the job doesn't care where it runs    |
+| `gh-runner-mac`     | macOS only       | the job needs macOS                   |
+| `gh-runner-linux`   | Linux only       | the job needs Linux                   |
+| `gh-runner-windows` | Windows only     | the job needs Windows                 |
+| `<hostname>`        | that one machine | the job needs _your_ box specifically |
 
 ```yaml
 jobs:
-  build:
+  any-machine:
     runs-on: [self-hosted, gh-runner]
+  mac-only:
+    runs-on: [self-hosted, gh-runner-mac]
+  linux-only:
+    runs-on: [self-hosted, gh-runner-linux]
+  windows-only:
+    runs-on: [self-hosted, gh-runner-windows]
 ```
 
-You also get a label for the specific machine (`ben-s-macbook-pro`, derived from the hostname) plus GitHub's own `self-hosted`, `macOS`/`Linux`/`Windows`, and `X64`/`ARM64`.
+GitHub adds `self-hosted`, `macOS`/`Linux`/`Windows`, and `X64`/`ARM64` on top of those, so you can pin by architecture too.
 
 ### One machine, one runner
 
-`gh-runner` registers **the machine it's running on** — nothing more. On an Apple silicon MacBook you get exactly one runner, labelled `self-hosted, macOS, ARM64, gh-runner`. It does not spin up Linux or Windows runners for you; there's no VM or container involved.
+`gh-runner` registers **the machine it's running on** — nothing more. On an Apple silicon MacBook you get exactly one runner: `self-hosted, macOS, ARM64, gh-runner, gh-runner-mac, <hostname>`. It does not spin up Linux or Windows runners for you; there's no VM or container involved.
 
-To cover several operating systems, run it on several machines — one `npx gh-runner` per box. They all register under the same `gh-runner` label, which is the point: the YAML doesn't have to know whose machine showed up.
+To cover several operating systems, run it on several machines — one `npx gh-runner` per box. That's what the per-OS labels are for: with a Mac and a Linux box both online, `[self-hosted, gh-runner]` goes to whichever is free, while `[self-hosted, gh-runner-mac]` only ever goes to the Mac.
 
-The flip side is that with a Mac and a Linux box both online, `runs-on: [self-hosted, gh-runner]` will go to whichever is free. When a job genuinely needs one OS, say so — GitHub adds the OS label to every runner automatically, so this is enough:
+The startup audit knows the difference. Run `gh-runner` on your Mac against a repo whose jobs ask for `gh-runner-linux` and it says so plainly:
 
-```yaml
-jobs:
-  mac-build:
-    runs-on: [self-hosted, gh-runner, macOS]
-  linux-build:
-    runs-on: [self-hosted, gh-runner, Linux]
-  windows-build:
-    runs-on: [self-hosted, gh-runner, Windows]
+```
+! .github/workflows/ci.yml:12 → build wants gh-runner-linux, which this runner won't have
+  that job wants Linux — run gh-runner on a Linux machine
 ```
 
-The startup audit understands this: run `gh-runner` on your Mac against a repo whose jobs ask for `Linux`, and it tells you those jobs won't land here rather than leaving you to wonder.
+rather than suggesting a `--labels` flag that would only lie to GitHub about what this machine is.
 
 ## The workflow check
 
@@ -74,7 +83,7 @@ Registering a runner nothing targets is the easiest way to waste ten minutes. On
     ! no job targets this runner; 3 target GitHub-hosted runners
 ```
 
-It understands every shape `runs-on` takes — a scalar, an inline list, a block sequence, and the `group:`/`labels:` mapping — and says so rather than guessing when the value is a `${{ }}` expression. Jobs that ask for labels you don't have are reported with the exact `--labels` flag that would fix them.
+The workflows are parsed with a real YAML parser ([`yaml`](https://www.npmjs.com/package/yaml), the package's only dependency), so anchors and aliases resolve the way GitHub sees them, a `runs-on:` inside a `run:` script block is correctly ignored, and a malformed file is reported as malformed instead of silently mis-read. Every shape `runs-on` accepts is understood — a scalar, an inline list, a block sequence, and the `group:`/`labels:` mapping — and it says so rather than guessing when the value is a `${{ }}` expression or a bare runner group.
 
 ### Letting it fix them for you
 
@@ -89,10 +98,13 @@ Update 3 jobs to runs-on: [self-hosted, gh-runner] and open a pull request? [y/N
 
 The rewrite happens in a throwaway [`git worktree`](https://git-scm.com/docs/git-worktree) checked out from your default branch — **your working tree, index, staged changes, and current branch are never touched**, even with work in flight. The worktree and its local branch are removed on every exit path, including failures.
 
+Only the bytes of each `runs-on` value are spliced, so comments, formatting, and every other line survive the edit — the diff shows one changed line per job and nothing else.
+
 Only GitHub-hosted jobs get repointed. A job already asking for `self-hosted` with labels you lack is left alone, because the fix there is on your side (`--labels`), not in the YAML.
 
 - `--fix-workflows` opens the PR without asking (useful when there's no terminal to prompt on).
 - `--fix-jobs build,test` limits the rewrite to specific job ids.
+- `--fix-label gh-runner-mac` writes an OS-pinned label instead of the generic one.
 - `--no-fix-workflows` never offers.
 - `--no-workflow-check` skips the audit entirely.
 
@@ -103,7 +115,7 @@ If the branch already exists on the remote, it links the open PR instead of stac
 | Option                   | Description                                                     |
 | ------------------------ | --------------------------------------------------------------- |
 | `--keep`                 | Stay online for multiple jobs (default: exit after one)         |
-| `--labels a,b,c`         | Extra labels in addition to `gh-runner` and the host label      |
+| `--labels a,b,c`         | Extra labels on top of the `gh-runner` set and the host label   |
 | `--repo OWNER/NAME`      | Target a specific repo instead of detecting from cwd            |
 | `--name NAME`            | Runner name to register (default: `<host>-<pid>`)               |
 | `--allow-public`         | Permit registration on a public repo (**dangerous**, see below) |
@@ -113,6 +125,7 @@ If the branch already exists on the remote, it links the open PR instead of stac
 | `--fix-workflows`        | Open the workflow PR without asking first                       |
 | `--no-fix-workflows`     | Never offer to open it                                          |
 | `--fix-jobs a,b`         | Limit the fix to these job ids                                  |
+| `--fix-label LABEL`      | Label the fix PR writes (default `gh-runner`)                   |
 | `-h, --help`             | Show help                                                       |
 | `-v, --version`          | Show version                                                    |
 

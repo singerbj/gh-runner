@@ -2,11 +2,19 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { applyRunsOnFix, classifyTarget, inspectWorkflows, parseRunsOn } from "../src/workflows.js";
+import {
+  applyRunsOnFix,
+  classifyTarget,
+  inspectWorkflows,
+  parseRunsOn,
+  parseWorkflow,
+  readRunsOnLabels,
+} from "../src/workflows.js";
+import type { RunsOnTarget } from "../src/workflows.js";
 
-const RUNNER_LABELS = ["self-hosted", "Linux", "X64", "gh-runner", "my-box"];
+const RUNNER_LABELS = ["self-hosted", "Linux", "X64", "gh-runner", "gh-runner-linux", "my-box"];
 
-describe("parseRunsOn", () => {
+describe("parseWorkflow", () => {
   it("reads the inline list form", () => {
     const targets = parseRunsOn(
       ["jobs:", "  build:", "    runs-on: [self-hosted, gh-runner]"].join("\n"),
@@ -40,8 +48,7 @@ describe("parseRunsOn", () => {
       "    steps:",
       "      - run: make",
     ].join("\n");
-    const targets = parseRunsOn(source, "ci.yml");
-    expect(targets[0]).toMatchObject({
+    expect(parseRunsOn(source, "ci.yml")[0]).toMatchObject({
       labels: ["self-hosted", "gh-runner"],
       line: 3,
       endLine: 5,
@@ -59,11 +66,61 @@ describe("parseRunsOn", () => {
     expect(parseRunsOn(source, "ci.yml")[0]?.labels).toEqual(["self-hosted", "gh-runner"]);
   });
 
+  it("treats a bare runner group as unresolvable rather than hosted", () => {
+    const source = ["jobs:", "  build:", "    runs-on:", "      group: my-group"].join("\n");
+    expect(parseRunsOn(source, "ci.yml")[0]?.unresolved).toBe("group: my-group");
+  });
+
   it("flags expressions instead of guessing at them", () => {
     const source = ["jobs:", "  build:", "    runs-on: ${{ matrix.os }}"].join("\n");
     const target = parseRunsOn(source, "ci.yml")[0];
-    expect(target?.expression).toBe("${{ matrix.os }}");
+    expect(target?.unresolved).toBe("${{ matrix.os }}");
     expect(target?.labels).toEqual([]);
+  });
+
+  it("flags a list that mixes literals with an expression", () => {
+    const source = ["jobs:", "  build:", "    runs-on: [self-hosted, '${{ matrix.tier }}']"].join(
+      "\n",
+    );
+    expect(parseRunsOn(source, "ci.yml")[0]?.unresolved).toBe("${{ matrix.tier }}");
+  });
+
+  // The scanner this replaced could not do any of the following.
+  it("resolves anchors and aliases", () => {
+    const source = [
+      "x-labels: &local [self-hosted, gh-runner]",
+      "jobs:",
+      "  build:",
+      "    runs-on: *local",
+    ].join("\n");
+    expect(parseRunsOn(source, "ci.yml")[0]?.labels).toEqual(["self-hosted", "gh-runner"]);
+  });
+
+  it("ignores a runs-on that isn't a job's own key", () => {
+    const source = [
+      "jobs:",
+      "  build:",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - run: |",
+      "          echo 'runs-on: [self-hosted, gh-runner]' >> notes.txt",
+      "      - name: 'runs-on: not a key'",
+      "        run: true",
+    ].join("\n");
+    const targets = parseRunsOn(source, "ci.yml");
+    expect(targets).toHaveLength(1);
+    expect(targets[0]?.labels).toEqual(["ubuntu-latest"]);
+  });
+
+  it("handles quoted and unusual job ids", () => {
+    const source = [
+      "jobs:",
+      '  "build-2":',
+      "    runs-on: ubuntu-latest",
+      "  deploy_prod:",
+      "    runs-on: [self-hosted, gh-runner]",
+    ].join("\n");
+    expect(parseRunsOn(source, "ci.yml").map((t) => t.job)).toEqual(["build-2", "deploy_prod"]);
   });
 
   it("attributes each runs-on to its own job", () => {
@@ -83,16 +140,37 @@ describe("parseRunsOn", () => {
       ["deploy", ["self-hosted", "gh-runner"]],
     ]);
   });
+
+  it("reports invalid YAML instead of mis-reading it", () => {
+    const result = parseWorkflow("jobs:\n  build:\n   runs-on: [oops\n", "ci.yml");
+    expect(result.error).toBeTruthy();
+    expect(result.targets).toEqual([]);
+  });
+
+  it("returns nothing for a workflow with no jobs", () => {
+    expect(parseRunsOn("name: CI\non: push\n", "ci.yml")).toEqual([]);
+  });
+});
+
+describe("readRunsOnLabels", () => {
+  it("normalises every accepted shape", () => {
+    expect(readRunsOnLabels("ubuntu-latest").labels).toEqual(["ubuntu-latest"]);
+    expect(readRunsOnLabels(["a", "b"]).labels).toEqual(["a", "b"]);
+    expect(readRunsOnLabels({ group: "g", labels: ["a"] }).labels).toEqual(["a"]);
+    expect(readRunsOnLabels({ labels: "a" }).labels).toEqual(["a"]);
+    expect(readRunsOnLabels(undefined).labels).toEqual([]);
+  });
 });
 
 describe("classifyTarget", () => {
-  const target = (labels: string[]) => ({
+  const target = (labels: string[]): RunsOnTarget => ({
     file: "ci.yml",
     job: "build",
     line: 1,
     endLine: 1,
     labels,
-    expression: undefined,
+    unresolved: undefined,
+    range: [0, 0],
   });
 
   it("matches when the runner carries every requested label", () => {
@@ -111,6 +189,14 @@ describe("classifyTarget", () => {
     }
   });
 
+  it("treats an OS label for another OS as a miss", () => {
+    const verdict = classifyTarget(target(["self-hosted", "gh-runner-mac"]), RUNNER_LABELS);
+    expect(verdict.kind).toBe("missing-labels");
+    if (verdict.kind === "missing-labels") {
+      expect(verdict.missing).toEqual(["gh-runner-mac"]);
+    }
+  });
+
   it("treats anything without self-hosted as GitHub-hosted", () => {
     expect(classifyTarget(target(["ubuntu-latest"]), RUNNER_LABELS).kind).toBe("hosted");
   });
@@ -119,8 +205,7 @@ describe("classifyTarget", () => {
 describe("applyRunsOnFix", () => {
   it("rewrites an inline value, keeping indentation", () => {
     const source = ["jobs:", "  build:", "    runs-on: ubuntu-latest", "    steps: []"].join("\n");
-    const targets = parseRunsOn(source, "ci.yml");
-    expect(applyRunsOnFix(source, targets, "gh-runner")).toBe(
+    expect(applyRunsOnFix(source, parseRunsOn(source, "ci.yml"), "gh-runner")).toBe(
       ["jobs:", "  build:", "    runs-on: [self-hosted, gh-runner]", "    steps: []"].join("\n"),
     );
   });
@@ -133,10 +218,64 @@ describe("applyRunsOnFix", () => {
       "      - ubuntu-latest",
       "    steps: []",
     ].join("\n");
-    const targets = parseRunsOn(source, "ci.yml");
-    expect(applyRunsOnFix(source, targets, "gh-runner")).toBe(
+    expect(applyRunsOnFix(source, parseRunsOn(source, "ci.yml"), "gh-runner")).toBe(
       ["jobs:", "  build:", "    runs-on: [self-hosted, gh-runner]", "    steps: []"].join("\n"),
     );
+  });
+
+  it("preserves comments and every other line", () => {
+    const source = [
+      "# top comment",
+      "name: CI",
+      "",
+      "jobs:",
+      "  build: # the important one",
+      "    runs-on: ubuntu-latest # hosted for now",
+      "    steps:",
+      "      - run: make # build it",
+    ].join("\n");
+    const fixed = applyRunsOnFix(source, parseRunsOn(source, "ci.yml"), "gh-runner");
+
+    expect(fixed).toContain("# top comment");
+    expect(fixed).toContain("  build: # the important one");
+    expect(fixed).toContain("    runs-on: [self-hosted, gh-runner] # hosted for now");
+    expect(fixed).toContain("      - run: make # build it");
+  });
+
+  it("rewrites several jobs in one pass without shifting each other", () => {
+    const source = [
+      "jobs:",
+      "  a:",
+      "    runs-on: ubuntu-latest",
+      "  b:",
+      "    runs-on:",
+      "      - macos-14",
+      "      - large",
+      "  c:",
+      "    runs-on: windows-latest",
+    ].join("\n");
+    const fixed = applyRunsOnFix(source, parseRunsOn(source, "ci.yml"), "gh-runner");
+    expect(fixed).toBe(
+      [
+        "jobs:",
+        "  a:",
+        "    runs-on: [self-hosted, gh-runner]",
+        "  b:",
+        "    runs-on: [self-hosted, gh-runner]",
+        "  c:",
+        "    runs-on: [self-hosted, gh-runner]",
+      ].join("\n"),
+    );
+  });
+
+  it("still parses after being rewritten", () => {
+    const source = ["jobs:", "  a:", "    runs-on:", "      - ubuntu-latest", "    steps: []"].join(
+      "\n",
+    );
+    const fixed = applyRunsOnFix(source, parseRunsOn(source, "ci.yml"), "gh-runner-mac");
+    const reparsed = parseWorkflow(fixed, "ci.yml");
+    expect(reparsed.error).toBeUndefined();
+    expect(reparsed.targets[0]?.labels).toEqual(["self-hosted", "gh-runner-mac"]);
   });
 
   it("leaves untargeted jobs alone", () => {
@@ -148,10 +287,9 @@ describe("applyRunsOnFix", () => {
       "    runs-on: ubuntu-latest",
     ].join("\n");
     const targets = parseRunsOn(source, "ci.yml").filter((t) => t.job === "move");
-    expect(applyRunsOnFix(source, targets, "gh-runner")).toContain("  keep:\n    runs-on: ubuntu");
-    expect(applyRunsOnFix(source, targets, "gh-runner")).toContain(
-      "  move:\n    runs-on: [self-hosted, gh-runner]",
-    );
+    const fixed = applyRunsOnFix(source, targets, "gh-runner");
+    expect(fixed).toContain("  keep:\n    runs-on: ubuntu-latest");
+    expect(fixed).toContain("  move:\n    runs-on: [self-hosted, gh-runner]");
   });
 });
 
@@ -201,6 +339,15 @@ describe("inspectWorkflows", () => {
     expect(report.missing.map((m) => m.target.job)).toEqual(["gpu"]);
     expect(report.unknown.map((t) => t.job)).toEqual(["dynamic"]);
     expect(report.suggestedLabels).toEqual(["cuda"]);
+  });
+
+  it("keeps going when one workflow is malformed", async () => {
+    await write("broken.yml", "jobs:\n  a:\n   runs-on: [oops\n");
+    await write("good.yml", "jobs:\n  b:\n    runs-on: [self-hosted, gh-runner]\n");
+
+    const report = await inspectWorkflows(root, RUNNER_LABELS);
+    expect(report.unparsed.map((u) => u.file)).toEqual([".github/workflows/broken.yml"]);
+    expect(report.matches.map((t) => t.job)).toEqual(["b"]);
   });
 
   it("reads every workflow file, .yaml included", async () => {

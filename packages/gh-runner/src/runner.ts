@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_LABEL } from "./constants.js";
+import { DEFAULT_LABEL, OS_NAMES, osForLabel, osLabel } from "./constants.js";
 import { downloadCached, extractArchive } from "./download.js";
 import { CliError, InterruptedError } from "./errors.js";
 import { proposeWorkflowFix } from "./fix.js";
@@ -124,7 +124,8 @@ export async function ghRunner(
 
   const platform = context.platform ?? detectPlatform();
   const hostLabel = await detectHostLabel(commandRunner, context.nodePlatform);
-  const labels = [DEFAULT_LABEL, hostLabel, ...options.labels];
+  // Generic label first, then one pinned to this OS, then this specific box.
+  const labels = [DEFAULT_LABEL, osLabel(platform.os), hostLabel, ...options.labels];
   const runnerName = options.name ?? `${hostLabel}-${process.pid}`;
   const allLabels = [...implicitLabels(platform), ...labels];
 
@@ -153,7 +154,7 @@ export async function ghRunner(
     const fix = await proposeWorkflowFix({
       repo,
       repoRoot,
-      label: DEFAULT_LABEL,
+      label: options.fixLabel ?? DEFAULT_LABEL,
       jobs: options.fixJobs,
       commandRunner,
       gh,
@@ -248,12 +249,23 @@ export async function ghRunner(
       workflows,
     };
 
+    // Pad against the longer of the two so the annotations line up; styling is
+    // applied after measuring, since escape codes have no width.
+    const targets: Array<[string, string]> = [
+      [`runs-on: [self-hosted, ${DEFAULT_LABEL}]`, "any registered machine"],
+      [`runs-on: [self-hosted, ${osLabel(platform.os)}]`, `${OS_NAMES[platform.os]} only`],
+    ];
+    const width = Math.max(...targets.map(([snippet]) => snippet.length));
+
     logger.raw(
       [
         "",
         `  ${green("Runner is live.")}  Target it with:`,
         "",
-        `      ${bold(`runs-on: [self-hosted, ${DEFAULT_LABEL}]`)}`,
+        ...targets.map(
+          ([snippet, note]) =>
+            `      ${bold(snippet)}${" ".repeat(width - snippet.length)}  ${dim(note)}`,
+        ),
         "",
         `  Repo:   ${repo}`,
         `  Labels: ${allLabels.join(", ")}`,
@@ -328,14 +340,27 @@ function reportWorkflows(logger: Logger, report: WorkflowReport): void {
       `${dim("!")} ${target.file}:${target.line} ${dim("→")} ${bold(target.job)} wants ` +
         `${missing.join(", ")}, which this runner won't have`,
     );
-    line(`  ${dim(`register it too with: --labels ${missing.join(",")}`)}`);
+
+    // A label pinned to another OS isn't something --labels can fix.
+    const otherOs = missing.map(osForLabel).find((os) => os !== null);
+    if (otherOs) {
+      line(
+        `  ${dim(`that job wants ${OS_NAMES[otherOs]} — run gh-runner on a ${OS_NAMES[otherOs]} machine`)}`,
+      );
+    } else {
+      line(`  ${dim(`register it too with: --labels ${missing.join(",")}`)}`);
+    }
+  }
+
+  for (const { file, message } of report.unparsed) {
+    line(`${dim("!")} ${file} isn't valid YAML — skipped ${dim(`(${message.split("\n")[0]})`)}`);
   }
 
   if (report.unknown.length > 0) {
     const count = report.unknown.length;
     line(
       dim(
-        `${count} job${count === 1 ? " uses" : "s use"} an expression for runs-on — can't tell statically`,
+        `${count} job${count === 1 ? " has a runs-on" : "s have a runs-on"} we can't resolve statically`,
       ),
     );
   }

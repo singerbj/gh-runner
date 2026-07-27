@@ -1,4 +1,4 @@
-import { DEFAULT_LABEL } from "./constants.js";
+import { DEFAULT_LABEL, OS_LABELS } from "./constants.js";
 import { CliError } from "./errors.js";
 
 export interface RunnerOptions {
@@ -19,6 +19,8 @@ export interface RunnerOptions {
   fixWorkflows: "ask" | "always" | "never";
   /** Limit the fix to these job ids. Empty means every hosted job. */
   fixJobs: string[];
+  /** Label the fix PR writes into `runs-on`. Defaults to `gh-runner`. */
+  fixLabel: string | undefined;
   /** Pin the actions/runner version. When omitted, the latest release is used. */
   runnerVersion: string | undefined;
   /** Explicit runner name. Defaults to `<host-label>-<pid>`. */
@@ -52,13 +54,20 @@ OPTIONS
   --fix-workflows        Open the workflow PR without asking first
   --no-fix-workflows     Never offer to open it
   --fix-jobs a,b         Limit the fix to these job ids
+  --fix-label LABEL      Label the fix PR writes (default: ${DEFAULT_LABEL})
   -h, --help             Show this help
   -v, --version          Show the gh-runner version
 
 IN YOUR WORKFLOW
   jobs:
-    build:
+    any-machine:
       runs-on: [self-hosted, ${DEFAULT_LABEL}]
+    mac-only:
+      runs-on: [self-hosted, ${OS_LABELS.osx}]
+    linux-only:
+      runs-on: [self-hosted, ${OS_LABELS.linux}]
+    windows-only:
+      runs-on: [self-hosted, ${OS_LABELS.win}]
 `;
 
 export function emptyOptions(): RunnerOptions {
@@ -70,6 +79,7 @@ export function emptyOptions(): RunnerOptions {
     skipWorkflowCheck: false,
     fixWorkflows: "ask",
     fixJobs: [],
+    fixLabel: undefined,
     runnerVersion: undefined,
     name: undefined,
     cacheDir: undefined,
@@ -142,6 +152,10 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       case "--fix-jobs":
         options.fixJobs = parseLabels(requireValue("--fix-jobs", argv[i + 1]));
         options.fixWorkflows = "always";
+        i += 1;
+        break;
+      case "--fix-label":
+        options.fixLabel = requireValue("--fix-label", argv[i + 1]);
         i += 1;
         break;
       case "-h":

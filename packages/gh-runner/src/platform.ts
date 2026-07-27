@@ -1,5 +1,6 @@
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
+import { OS_NAMES } from "./constants.js";
 import { CliError } from "./errors.js";
 import { execCapture } from "./exec.js";
 import type { CommandRunner } from "./exec.js";
@@ -64,8 +65,7 @@ export function runnerScript(platform: RunnerPlatform, name: "config" | "run"): 
 
 /** The labels GitHub attaches to every self-hosted runner, as it spells them. */
 export function implicitLabels(platform: RunnerPlatform): string[] {
-  const os = platform.os === "osx" ? "macOS" : platform.os === "win" ? "Windows" : "Linux";
-  return ["self-hosted", os, platform.arch.toUpperCase()];
+  return ["self-hosted", OS_NAMES[platform.os], platform.arch.toUpperCase()];
 }
 
 /**

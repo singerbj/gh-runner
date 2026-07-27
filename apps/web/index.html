@@ -94,10 +94,11 @@
 
   <span class="c-green">Runner is live.</span>  Target it with:
 
-      <span class="c-bold">runs-on: [self-hosted, gh-runner]</span>
+      <span class="c-bold">runs-on: [self-hosted, gh-runner]</span>      <span class="c-dim">any registered machine</span>
+      <span class="c-bold">runs-on: [self-hosted, gh-runner-mac]</span>  <span class="c-dim">macOS only</span>
 
   Repo:   octocat/private-thing
-  Labels: self-hosted, macOS, ARM64, gh-runner, my-macbook-pro
+  Labels: self-hosted, macOS, ARM64, gh-runner, gh-runner-mac, my-macbook-pro
   Mode:   ephemeral — exits after one job
 
   <span class="c-dim">Ctrl+C to stop and deregister.</span>
@@ -226,25 +227,58 @@
       - <span class="c-key">uses:</span> actions/checkout@v5
       - <span class="c-key">run:</span> npm ci &amp;&amp; npm test</code></pre>
 
+        <h3 class="subhead">Need a specific OS? Ask for one</h3>
+        <p class="section-lede">
+          Every machine also registers a label pinned to its operating system, so a job that needs
+          macOS never lands on the Linux box someone else has online:
+        </p>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Label</th>
+                <th scope="col">Registered on</th>
+                <th scope="col">Use it when</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>gh-runner</code></td>
+                <td>every machine</td>
+                <td>the job doesn't care where it runs</td>
+              </tr>
+              <tr>
+                <td><code>gh-runner-mac</code></td>
+                <td>macOS only</td>
+                <td>the job needs macOS</td>
+              </tr>
+              <tr>
+                <td><code>gh-runner-linux</code></td>
+                <td>Linux only</td>
+                <td>the job needs Linux</td>
+              </tr>
+              <tr>
+                <td><code>gh-runner-windows</code></td>
+                <td>Windows only</td>
+                <td>the job needs Windows</td>
+              </tr>
+              <tr>
+                <td><code>&lt;hostname&gt;</code></td>
+                <td>that one machine</td>
+                <td>the job needs <em>your</em> box specifically</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
         <h3 class="subhead">One machine, one runner</h3>
         <p class="section-lede">
           <code>gh-runner</code> registers the machine it's running on — nothing more. On an Apple
-          silicon MacBook that's exactly one runner, labelled
-          <code>self-hosted, macOS, ARM64, gh-runner</code>. No VMs, no containers, and no Linux or
-          Windows runner conjured out of thin air.
+          silicon MacBook that's exactly one runner:
+          <code>self-hosted, macOS, ARM64, gh-runner, gh-runner-mac</code>. No VMs, no containers,
+          and no Linux or Windows runner conjured out of thin air. To cover several operating
+          systems, run it on several machines — that's what the per-OS labels are for.
         </p>
-        <p class="section-lede">
-          To cover several operating systems, run it on several machines. They all register under
-          the same <code>gh-runner</code> label, so add the OS label GitHub attaches automatically
-          whenever a job actually cares:
-        </p>
-        <pre class="code-block"><code><span class="c-key">jobs:</span>
-  <span class="c-key">mac-build:</span>
-    <span class="c-key">runs-on:</span> [self-hosted, gh-runner, macOS]
-  <span class="c-key">linux-build:</span>
-    <span class="c-key">runs-on:</span> [self-hosted, gh-runner, Linux]
-  <span class="c-key">windows-build:</span>
-    <span class="c-key">runs-on:</span> [self-hosted, gh-runner, Windows]</code></pre>
       </section>
 
       <section class="wrap" id="check" aria-labelledby="check-heading">
@@ -281,10 +315,9 @@ Update 3 jobs to runs-on: [self-hosted, gh-runner] and open a pull request? <spa
           <article class="card">
             <h3>It reads YAML properly</h3>
             <p>
-              Scalars, inline lists, block sequences, and the <code>group:</code>/<code
-                >labels:</code
-              >
-              mapping are all understood. When <code>runs-on</code> is a
+              A real YAML parser, not a regex. Anchors and aliases resolve the way GitHub sees them,
+              a <code>runs-on:</code> inside a shell script is ignored, and a malformed file is
+              reported rather than silently mis-read. When the value is a
               <code>${{ }}</code> expression it says so instead of guessing.
             </p>
           </article>
@@ -361,6 +394,10 @@ Update 3 jobs to runs-on: [self-hosted, gh-runner] and open a pull request? <spa
               <tr>
                 <td><code>--fix-jobs a,b</code></td>
                 <td>Limit the fix to these job ids</td>
+              </tr>
+              <tr>
+                <td><code>--fix-label LABEL</code></td>
+                <td>Label the fix PR writes (default <code>gh-runner</code>)</td>
               </tr>
             </tbody>
           </table>

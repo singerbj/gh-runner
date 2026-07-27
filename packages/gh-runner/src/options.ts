@@ -56,7 +56,7 @@ export const USAGE = `gh-runner — temporarily register this machine as a GitHu
 
 USAGE
   gh-runner [platforms...] [options]     # run from inside a git repo
-  npx gh-runner [platforms...] [options]
+  npx @singerbj/gh-runner [platforms...] [options]
 
 PLATFORMS
   gh-runner                Pick from a menu (or just this machine, with no terminal)

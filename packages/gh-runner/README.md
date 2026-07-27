@@ -4,7 +4,7 @@ Temporarily register the machine you're sitting at as a GitHub Actions **self-ho
 
 ```bash
 cd ~/code/my-repo
-npx gh-runner
+npx @singerbj/gh-runner
 ```
 
 It checks your workflows actually target a self-hosted runner, registers one under the `gh-runner` label, and **stays online for as long as the command runs** — taking job after job. Stop it with Ctrl+C and it deregisters and deletes everything it downloaded.
@@ -15,11 +15,13 @@ Some jobs only make sense on your hardware: an Apple silicon build, a GPU test s
 
 ## Install
 
-Nothing to install — `npx gh-runner` is the intended usage. If you reach for it often:
+Nothing to install — `npx @singerbj/gh-runner` is the intended usage. If you reach for it often:
 
 ```bash
-npm install -g gh-runner
+npm install -g @singerbj/gh-runner
 ```
+
+Either way the command is `gh-runner` — the scope is only how npm finds the package.
 
 **Requires** [`gh`](https://cli.github.com), authenticated (`gh auth login`), and admin rights on the target repo. macOS, Linux, and Windows, on x64 or arm64.
 
@@ -236,7 +238,7 @@ Everything else is designed to leave nothing behind:
 ## Programmatic use
 
 ```ts
-import { ghRunner, createLogger } from "gh-runner";
+import { ghRunner, createLogger } from "@singerbj/gh-runner";
 
 const { runners, workflows } = await ghRunner(
   { repo: "octocat/hello-world", platforms: ["mac", "linux"], labels: ["gpu"] },

@@ -46,7 +46,7 @@ jobs:
         run: npx turbo run build
 
       - name: Verify the published package contents
-        run: npm pack --dry-run --workspace gh-runner
+        run: npm pack --dry-run --workspace @singerbj/gh-runner
 
   cli-smoke:
     name: CLI smoke test (${{ matrix.os }})
@@ -65,7 +65,7 @@ jobs:
 
       - run: npm ci
 
-      - run: npx turbo run build --filter=gh-runner
+      - run: npx turbo run build --filter=@singerbj/gh-runner
 
       - name: The bin runs and reports its version
         run: |

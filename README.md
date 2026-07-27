@@ -1,12 +1,12 @@
 # gh-runner
 
-Monorepo for **[`gh-runner`](https://www.npmjs.com/package/gh-runner)** — a CLI that temporarily registers the machine you're sitting at as a GitHub Actions self-hosted runner for the repo you're standing in. It stays online for as long as the command runs, then deregisters and deletes itself.
+Monorepo for **[`@singerbj/gh-runner`](https://www.npmjs.com/package/@singerbj/gh-runner)** — a CLI that temporarily registers the machine you're sitting at as a GitHub Actions self-hosted runner for the repo you're standing in. It stays online for as long as the command runs, then deregisters and deletes itself.
 
 ```bash
 cd ~/code/my-repo
-npx gh-runner              # pick platforms from a menu
-npx gh-runner mac linux    # or name them — one runner each, in parallel
-npx gh-runner --all        # everything this machine can serve
+npx @singerbj/gh-runner              # pick platforms from a menu
+npx @singerbj/gh-runner mac linux    # or name them — one runner each, in parallel
+npx @singerbj/gh-runner --all        # everything this machine can serve
 ```
 
 Linux can come from a container, so any machine can serve it; macOS and Windows have to be native, so asking a Mac for a Windows runner is an error rather than a silent no-op.
@@ -15,10 +15,10 @@ It also audits `.github/workflows` first, so you find out that nothing targets `
 
 ## What's in here
 
-| Path                 | Package          | What it is                                         |
-| -------------------- | ---------------- | -------------------------------------------------- |
-| `packages/gh-runner` | `gh-runner`      | The CLI and its programmatic API (TypeScript, ESM) |
-| `apps/web`           | `@gh-runner/web` | The landing page (Vite, static, deployed to Pages) |
+| Path                 | Package               | What it is                                         |
+| -------------------- | --------------------- | -------------------------------------------------- |
+| `packages/gh-runner` | `@singerbj/gh-runner` | The CLI and its programmatic API (TypeScript, ESM) |
+| `apps/web`           | `@gh-runner/web`      | The landing page (Vite, static, deployed to Pages) |
 
 Full CLI docs live in [`packages/gh-runner/README.md`](packages/gh-runner/README.md).
 
@@ -63,7 +63,7 @@ npm run build
 node packages/gh-runner/dist/cli.js --help
 
 # or link it onto your PATH
-npm link --workspace gh-runner
+npm link --workspace @singerbj/gh-runner
 gh-runner --repo owner/name
 ```
 
@@ -78,13 +78,19 @@ gh-runner --repo owner/name
 
 Merges that don't change the version publish nothing, so unrelated work can land freely.
 
-**Required repository secret:** `NPM_TOKEN` — an npm automation token with publish rights on `gh-runner`.
+**Required repository secret:** `NPM_TOKEN`, added at **Settings → Secrets and variables → Actions**.
+
+Use a **classic Automation token**, or a granular token with **Read and write on _all_ packages**. A granular token limited to selected packages can't publish `@singerbj/gh-runner` until it exists — npm only lets you select packages that are already there, so the very first publish of a new name fails with a `403 Forbidden` that says nothing about scopes. (The other way through that chicken-and-egg: publish the first version by hand once, then scope a token — or [Trusted Publishing](https://docs.npmjs.com/trusted-publishers) — to the package that now exists.)
+
+The workflow checks the secret exists before building the tarball, and translates a `403` into the explanation above rather than leaving you with npm's wording.
 
 ## The landing page
 
 `apps/web` deploys to GitHub Pages through the [Pages workflow](.github/workflows/pages.yml), which builds the site and publishes it on every push to `main` that touches it — plus on demand from the Actions tab.
 
-The workflow enables Pages itself (`configure-pages` with `enablement: true`), so no one has to visit Settings first; it just needs Actions to have write permission for Pages, which the workflow requests. Once `main` has this workflow, the site lands at **https://singerbj.github.io/gh-runner/**.
+**One-time setup:** switch Pages on at **Settings → Pages → Build and deployment → Source: GitHub Actions**. A workflow can't do this for itself — creating a Pages site needs admin rights, and `GITHUB_TOKEN` doesn't have them — so the workflow checks first and tells you to click that if it's missing, rather than failing deep inside `configure-pages`.
+
+Once Pages is on, the site lands at **https://singerbj.github.io/gh-runner/**.
 
 The Vite build uses a relative `base`, so the same output works at a domain root or under a `/gh-runner/` project path without reconfiguration.
 

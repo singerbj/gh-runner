@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   applyRunsOnFix,
   classifyTarget,
+  hostedRunnerOs,
   inspectWorkflows,
   parseRunsOn,
   parseWorkflow,
@@ -204,7 +205,56 @@ describe("classifyTarget", () => {
   });
 });
 
+describe("hostedRunnerOs", () => {
+  it("reads the OS out of every image variant GitHub ships", () => {
+    expect(hostedRunnerOs(["macos-latest"])).toBe("osx");
+    expect(hostedRunnerOs(["macos-14"])).toBe("osx");
+    expect(hostedRunnerOs(["macos-13-xlarge"])).toBe("osx");
+    expect(hostedRunnerOs(["macOS-latest"])).toBe("osx");
+    expect(hostedRunnerOs(["ubuntu-latest"])).toBe("linux");
+    expect(hostedRunnerOs(["ubuntu-24.04-arm"])).toBe("linux");
+    expect(hostedRunnerOs(["ubuntu-latest-8-cores"])).toBe("linux");
+    expect(hostedRunnerOs(["windows-2022"])).toBe("win");
+  });
+
+  it("ignores labels that sit alongside the image", () => {
+    expect(hostedRunnerOs(["macos-14", "large"])).toBe("osx");
+  });
+
+  it("won't guess", () => {
+    // A larger runner someone named themselves, or a group — no OS in sight.
+    expect(hostedRunnerOs(["our-beefy-box"])).toBeNull();
+    expect(hostedRunnerOs([])).toBeNull();
+    // "ubuntu-ish" starts with the family name but isn't one of GitHub's.
+    expect(hostedRunnerOs(["ubuntufan"])).toBeNull();
+    // Two images that disagree: nothing sensible to pick.
+    expect(hostedRunnerOs(["macos-14", "ubuntu-latest"])).toBeNull();
+  });
+});
+
 describe("applyRunsOnFix", () => {
+  it("takes a label per job", () => {
+    const source = [
+      "jobs:",
+      "  mac:",
+      "    runs-on: macos-14",
+      "  linux:",
+      "    runs-on: ubuntu-latest",
+    ].join("\n");
+    const fixed = applyRunsOnFix(source, parseRunsOn(source, "ci.yml"), (target) =>
+      target.job === "mac" ? "gh-runner-mac" : "gh-runner-linux",
+    );
+    expect(fixed).toBe(
+      [
+        "jobs:",
+        "  mac:",
+        "    runs-on: [self-hosted, gh-runner-mac]",
+        "  linux:",
+        "    runs-on: [self-hosted, gh-runner-linux]",
+      ].join("\n"),
+    );
+  });
+
   it("rewrites an inline value, keeping indentation", () => {
     const source = ["jobs:", "  build:", "    runs-on: ubuntu-latest", "    steps: []"].join("\n");
     expect(applyRunsOnFix(source, parseRunsOn(source, "ci.yml"), "gh-runner")).toBe(

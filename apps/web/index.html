@@ -156,8 +156,10 @@
         <p class="section-lede">
           Registering a runner nothing targets wastes ten minutes. On startup it parses every
           workflow — real YAML, not regex — reports which jobs will land here, and offers to open a
-          PR repointing the ones that won't. The rewrite happens in a throwaway
-          <code>git worktree</code>, so your working tree is never touched.
+          PR repointing the ones that won't. Each job keeps its platform: a
+          <code>macos-14</code> job asks for <code>gh-runner-mac</code>, so it can only land on a
+          Mac. The rewrite happens in a throwaway <code>git worktree</code>, so your working tree is
+          never touched.
         </p>
         <pre
           class="code-block small"

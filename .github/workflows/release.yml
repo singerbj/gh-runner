@@ -1,10 +1,15 @@
 name: Release
 
-# Publishes packages/gh-runner to npm when main lands a change to it. The
-# version is worked out here rather than by hand: whatever npm already has,
-# bumped one step. Say `[minor]` or `[major]` anywhere in a commit message for
-# a bigger step, or bump packages/gh-runner/package.json yourself — a manifest
-# ahead of npm is taken at its word and published as-is.
+# Publishes packages/gh-runner to npm when main lands a change to it. Merges
+# only ever move the patch digit — the major and minor stay exactly where a
+# human put them. To move those, set the version in
+# packages/gh-runner/package.json yourself (a manifest ahead of npm is taken at
+# its word and published as-is), or run this workflow from the Actions tab and
+# pick minor or major, which resets the patch to zero.
+#
+# Nothing here reads commit messages. An earlier version looked for a keyword,
+# and the commit that documented the keyword tripped it — 0.1.0 went straight
+# to 1.0.0.
 on:
   push:
     branches: [main]
@@ -17,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       level:
-        description: How far to bump the version
+        description: How far to bump the version (minor and major reset the patch to zero)
         type: choice
         options: [patch, minor, major]
         default: patch
@@ -43,8 +48,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          # The bump level is read from the commits since the last release, and
-          # the bump commit is pushed back — both need real history.
+          # The bump commit is pushed back to main, which a shallow clone can't
+          # do.
           fetch-depth: 0
 
       - uses: actions/setup-node@v5
@@ -99,18 +104,9 @@ jobs:
             exit 0
           fi
 
-          level="${LEVEL_INPUT:-}"
-          if [ -z "$level" ]; then
-            # Everything since the last release, so the keyword still counts when
-            # several commits land in one push or a merge buries it.
-            last_tag=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
-            log=$(git log ${last_tag:+"$last_tag"..}HEAD --format='%B')
-            level=patch
-            case "$log" in
-              *'[major]'*) level=major ;;
-              *'[minor]'*) level=minor ;;
-            esac
-          fi
+          # A merge is a patch, always. Anything larger is a decision, and a
+          # decision needs a human: the dispatch input, or the manifest.
+          level="${LEVEL_INPUT:-patch}"
 
           # Bump from what npm has, not from the manifest: they're equal here,
           # but only npm knows what was really released.

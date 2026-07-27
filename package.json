@@ -1,0 +1,33 @@
+{
+  "name": "gh-runner-here-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Monorepo for the gh-runner-here CLI and its landing page",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/singerbj/gh-runner.git"
+  },
+  "packageManager": "npm@10.9.7",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "clean": "turbo run clean",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "^3.6.2",
+    "turbo": "^2.10.7",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Typecheck, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Typecheck
+        run: npx turbo run typecheck
+
+      - name: Test
+        run: npx turbo run test
+
+      - name: Build
+        run: npx turbo run build
+
+      - name: Verify the published package contents
+        run: npm pack --dry-run --workspace gh-runner-here
+
+  cli-smoke:
+    name: CLI smoke test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npx turbo run build --filter=gh-runner-here
+
+      - name: The bin runs and reports its version
+        run: |
+          node packages/gh-runner-here/dist/cli.js --help
+          node packages/gh-runner-here/dist/cli.js --version

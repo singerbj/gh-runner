@@ -1,0 +1,68 @@
+{
+  "name": "gh-runner-here",
+  "version": "0.1.0",
+  "description": "Temporarily register this machine as an ephemeral GitHub Actions self-hosted runner for the repo you're standing in.",
+  "keywords": [
+    "github",
+    "github-actions",
+    "actions",
+    "self-hosted",
+    "runner",
+    "ephemeral",
+    "ci",
+    "cli"
+  ],
+  "license": "MIT",
+  "author": "singerbj",
+  "homepage": "https://github.com/singerbj/gh-runner#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/singerbj/gh-runner.git",
+    "directory": "packages/gh-runner-here"
+  },
+  "bugs": {
+    "url": "https://github.com/singerbj/gh-runner/issues"
+  },
+  "type": "module",
+  "bin": {
+    "gh-runner-here": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/finalize-build.mjs",
+    "dev": "tsc -p tsconfig.build.json --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

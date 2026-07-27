@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>gh-runner-here — this machine, as a GitHub Actions runner</title>
+    <meta
+      name="description"
+      content="Temporarily register the machine you're sitting at as an ephemeral GitHub Actions self-hosted runner for the repo you're standing in. One command, no cleanup."
+    />
+    <meta name="color-scheme" content="dark light" />
+    <meta property="og:title" content="gh-runner-here" />
+    <meta
+      property="og:description"
+      content="Temporarily register this machine as a GitHub Actions self-hosted runner. Runs one job, then deregisters and deletes itself."
+    />
+    <meta property="og:type" content="website" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%230d1117'/%3E%3Ctext x='50' y='68' font-size='58' text-anchor='middle' fill='%233fb950' font-family='monospace'%3E%3E_%3C/text%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#content">Skip to content</a>
+
+    <header class="site-header">
+      <div class="wrap header-inner">
+        <span class="wordmark"><span class="prompt">$</span> gh-runner-here</span>
+        <nav aria-label="Primary">
+          <a href="#how">How it works</a>
+          <a href="#options">Options</a>
+          <a href="#safety">Safety</a>
+          <a
+            class="ghost-link"
+            href="https://github.com/singerbj/gh-runner"
+            rel="noreferrer noopener"
+            >GitHub</a
+          >
+        </nav>
+      </div>
+    </header>
+
+    <main id="content">
+      <section class="hero wrap">
+        <p class="eyebrow">GitHub Actions · self-hosted · ephemeral</p>
+        <h1>Your machine.<br />Their CI.<br /><span class="accent">One command.</span></h1>
+        <p class="lede">
+          <strong>gh-runner-here</strong> temporarily registers the computer you're sitting at as a
+          self-hosted runner for the repo you're standing in. It waits for one job, deregisters, and
+          deletes everything it downloaded. Ctrl+C does the same.
+        </p>
+
+        <div class="cta">
+          <button
+            class="copy-command"
+            type="button"
+            data-copy="npx gh-runner-here"
+            aria-label="Copy npx gh-runner-here to clipboard"
+          >
+            <code><span class="prompt">$</span> npx gh-runner-here</code>
+            <span class="copy-state" aria-hidden="true">Copy</span>
+          </button>
+          <a
+            class="button-secondary"
+            href="https://www.npmjs.com/package/gh-runner-here"
+            rel="noreferrer noopener"
+            >View on npm</a
+          >
+        </div>
+
+        <ul class="badges">
+          <li>No install</li>
+          <li>Nothing left registered</li>
+          <li>Nothing left on disk</li>
+          <li>macOS &amp; Linux</li>
+        </ul>
+      </section>
+
+      <section class="wrap terminal-section" aria-label="Example session">
+        <div
+          class="terminal"
+          role="img"
+          aria-label="Example terminal session running gh-runner-here"
+        >
+          <div class="terminal-bar"><span></span><span></span><span></span></div>
+          <pre class="terminal-body"><code><span class="c-dim">~/code/my-repo</span>
+<span class="c-prompt">$</span> npx gh-runner-here
+<span class="c-bold">==&gt;</span> Looking up the latest runner release...
+<span class="c-bold">==&gt;</span> Downloading runner v2.334.0 (osx-arm64)... <span class="c-dim">cached for next time</span>
+<span class="c-bold">==&gt;</span> Requesting a registration token for <span class="c-bold">octocat/private-thing</span>...
+<span class="c-bold">==&gt;</span> Registering...
+
+  <span class="c-green">Runner is live.</span>  Target it with:
+
+      <span class="c-bold">runs-on: [self-hosted, my-macbook-pro]</span>
+
+  Repo:   octocat/private-thing
+  Labels: self-hosted, osx, arm64, my-macbook-pro
+  Mode:   ephemeral — exits after one job
+
+  <span class="c-dim">Ctrl+C to stop and deregister.</span>
+
+<span class="c-dim">√ Connected to GitHub. Listening for Jobs...</span>
+<span class="c-dim">Running job: build</span>
+<span class="c-green">√ build</span> completed with result: Succeeded
+<span class="c-bold">==&gt;</span> Deregistering runner...
+<span class="c-bold">==&gt;</span> <span class="c-green">Done.</span> Nothing left registered, nothing left on disk.</code></pre>
+        </div>
+      </section>
+
+      <section class="wrap" aria-labelledby="why-heading">
+        <h2 id="why-heading">Some jobs only make sense on your hardware</h2>
+        <div class="grid">
+          <article class="card">
+            <h3>Apple silicon, for real</h3>
+            <p>
+              Build and test on the exact M-series machine on your desk instead of paying for a
+              hosted macOS minute — or emulating it and hoping.
+            </p>
+          </article>
+          <article class="card">
+            <h3>The GPU you already own</h3>
+            <p>
+              CUDA suites, model evals, anything that wants a real accelerator. Add
+              <code>--labels gpu</code> and target it from your workflow.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Behind the VPN</h3>
+            <p>
+              Integration tests that need a staging database, an internal registry, or a device on
+              your LAN. Your machine is already on the network.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Debug a job, live</h3>
+            <p>
+              Reproduce a failing workflow step in the same shape CI runs it — but on a box where
+              you can attach a debugger and read the filesystem afterwards.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Skip the queue</h3>
+            <p>
+              A four-minute hosted job is often twenty seconds locally. Warm caches, warm disk, no
+              waiting for a runner to be allocated.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Zero standing infrastructure</h3>
+            <p>
+              Nothing is installed as a service. Nothing survives the run. There's no runner sitting
+              idle in your repo settings a month from now.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="wrap" id="how" aria-labelledby="how-heading">
+        <h2 id="how-heading">How it works</h2>
+        <ol class="steps">
+          <li>
+            <h3>Checks your setup</h3>
+            <p>
+              Requires <code>gh</code> to be installed and authenticated. Your credentials stay in
+              the GitHub CLI — this tool never handles a long-lived token.
+            </p>
+          </li>
+          <li>
+            <h3>Resolves the repo</h3>
+            <p>
+              Detected from the git checkout you're standing in, or set explicitly with
+              <code>--repo owner/name</code>. Public repos are refused by default.
+            </p>
+          </li>
+          <li>
+            <h3>Fetches the runner</h3>
+            <p>
+              Downloads the matching <code>actions/runner</code> release for your OS and
+              architecture, cached under <code>~/.cache/gh-runner-here</code> for next time.
+            </p>
+          </li>
+          <li>
+            <h3>Registers ephemerally</h3>
+            <p>
+              Mints a short-lived registration token, configures the runner in a fresh temp
+              directory, and labels it after your machine.
+            </p>
+          </li>
+          <li>
+            <h3>Runs your job</h3>
+            <p>
+              Target it with <code>runs-on: [self-hosted, &lt;label&gt;]</code>. The label is
+              printed at startup so you can copy it straight into your workflow.
+            </p>
+          </li>
+          <li>
+            <h3>Cleans up after itself</h3>
+            <p>
+              Deregisters and deletes the temp directory — on success, on failure, and on Ctrl+C.
+              GitHub retires an ephemeral runner after a single job regardless.
+            </p>
+          </li>
+        </ol>
+      </section>
+
+      <section class="wrap" id="workflow" aria-labelledby="workflow-heading">
+        <h2 id="workflow-heading">In your workflow</h2>
+        <p class="section-lede">
+          The startup banner prints the label to target. Drop it into <code>runs-on</code>:
+        </p>
+        <pre class="code-block"><code><span class="c-key">jobs:</span>
+  <span class="c-key">build:</span>
+    <span class="c-key">runs-on:</span> [self-hosted, my-macbook-pro]
+    <span class="c-key">steps:</span>
+      - <span class="c-key">uses:</span> actions/checkout@v5
+      - <span class="c-key">run:</span> npm ci &amp;&amp; npm test</code></pre>
+      </section>
+
+      <section class="wrap" id="options" aria-labelledby="options-heading">
+        <h2 id="options-heading">Options</h2>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Flag</th>
+                <th scope="col">What it does</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>--keep</code></td>
+                <td>Stay online for multiple jobs instead of exiting after one</td>
+              </tr>
+              <tr>
+                <td><code>--labels a,b,c</code></td>
+                <td>Extra labels in addition to the default host label</td>
+              </tr>
+              <tr>
+                <td><code>--repo OWNER/NAME</code></td>
+                <td>Target a specific repo instead of detecting from the current directory</td>
+              </tr>
+              <tr>
+                <td><code>--name NAME</code></td>
+                <td>Runner name to register (default <code>&lt;host&gt;-&lt;pid&gt;</code>)</td>
+              </tr>
+              <tr>
+                <td><code>--allow-public</code></td>
+                <td>Permit registration on a public repo — see below</td>
+              </tr>
+              <tr>
+                <td><code>--runner-version X.Y.Z</code></td>
+                <td>Pin the runner version (default: latest release)</td>
+              </tr>
+              <tr>
+                <td><code>--cache-dir PATH</code></td>
+                <td>Where to cache downloaded runner tarballs</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="wrap" id="safety" aria-labelledby="safety-heading">
+        <h2 id="safety-heading">Safety</h2>
+        <div class="warning">
+          <h3>Public repos are refused by default</h3>
+          <p>
+            On a public repo, anyone can open a pull request — and a workflow that triggers on
+            <code>pull_request</code> would run their code on your machine, as your user. That is
+            not a hypothetical; it's the standard self-hosted runner warning in GitHub's own docs.
+          </p>
+          <p>
+            <code>--allow-public</code> exists as a deliberate escape hatch for repos where you
+            trust every single person who can open a PR. Reach for it on purpose, not by habit.
+          </p>
+        </div>
+        <ul class="checklist">
+          <li><strong>Ephemeral by default</strong> — GitHub retires the runner after one job.</li>
+          <li>
+            <strong>Fresh temp directory</strong> — the runner's work tree is created with
+            <code>mktemp -d</code> and removed on exit.
+          </li>
+          <li>
+            <strong>Cleanup on every path</strong> — normal exit, error, and Ctrl+C all deregister.
+          </li>
+          <li>
+            <strong>No token handling</strong> — registration and removal tokens are minted on
+            demand through <code>gh</code> and live for minutes.
+          </li>
+          <li>
+            <strong>Admin rights required</strong> — you can only register a runner on a repo you
+            already administer.
+          </li>
+        </ul>
+      </section>
+
+      <section class="wrap cta-block" aria-labelledby="try-heading">
+        <h2 id="try-heading">Try it in the repo you have open</h2>
+        <button
+          class="copy-command large"
+          type="button"
+          data-copy="npx gh-runner-here"
+          aria-label="Copy npx gh-runner-here to clipboard"
+        >
+          <code><span class="prompt">$</span> npx gh-runner-here</code>
+          <span class="copy-state" aria-hidden="true">Copy</span>
+        </button>
+        <p class="fine-print">
+          Requires <a href="https://cli.github.com" rel="noreferrer noopener">gh</a>, authenticated
+          with <code>gh auth login</code>, plus admin rights on the target repo. macOS and Linux,
+          x64 and arm64.
+        </p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap footer-inner">
+        <span>MIT licensed</span>
+        <nav aria-label="Footer">
+          <a href="https://github.com/singerbj/gh-runner" rel="noreferrer noopener">Source</a>
+          <a href="https://www.npmjs.com/package/gh-runner-here" rel="noreferrer noopener">npm</a>
+          <a href="https://github.com/singerbj/gh-runner/issues" rel="noreferrer noopener"
+            >Issues</a
+          >
+        </nav>
+      </div>
+    </footer>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

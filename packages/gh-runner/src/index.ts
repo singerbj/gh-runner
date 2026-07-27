@@ -19,7 +19,7 @@ export {
   OS_NAMES,
   osLabel,
   osForLabel,
-  FIX_BRANCH,
+  FIX_BRANCH_PREFIX,
 } from "./constants.js";
 export { GhClient } from "./gh.js";
 export type { GhClientOptions, RepoVisibility } from "./gh.js";

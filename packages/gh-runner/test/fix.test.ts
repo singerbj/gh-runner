@@ -92,11 +92,14 @@ describe("proposeWorkflowFix", () => {
     expect(result.jobs).toEqual([{ file: ".github/workflows/ci.yml", job: "build" }]);
     expect(result.url).toBe("https://github.com/octocat/thing/pull/7");
 
+    // Randomized, so a branch left behind by an earlier run can't collide.
+    expect(result.branch).toMatch(/^gh-runner\/target-self-hosted-[0-9a-f]{8}$/);
+
     // The branch really landed on the remote, with only `build` changed.
     const pushed = git(
       checkout,
       "show",
-      "refs/remotes/origin/gh-runner/target-self-hosted:.github/workflows/ci.yml",
+      `refs/remotes/origin/${result.branch}:.github/workflows/ci.yml`,
     );
     expect(pushed).toContain("  build:\n    runs-on: [self-hosted, gh-runner]");
     expect(pushed).toContain("  local:\n    runs-on: [self-hosted, gh-runner]");
@@ -132,7 +135,7 @@ describe("proposeWorkflowFix", () => {
     await propose();
 
     expect(git(checkout, "worktree", "list").split("\n")).toHaveLength(1);
-    expect(git(checkout, "branch", "--list", "gh-runner/target-self-hosted")).toBe("");
+    expect(git(checkout, "branch", "--list", "gh-runner/target-self-hosted*")).toBe("");
 
     const after = await readdir(tmpdir());
     const leaked = after.filter(
@@ -153,19 +156,52 @@ describe("proposeWorkflowFix", () => {
       propose({ commandRunner: failing, gh: new GhClient({ runner: failing }) }),
     ).rejects.toThrow(/couldn't open a pull request/);
     expect(git(checkout, "worktree", "list").split("\n")).toHaveLength(1);
-    expect(git(checkout, "branch", "--list", "gh-runner/target-self-hosted")).toBe("");
+    expect(git(checkout, "branch", "--list", "gh-runner/target-self-hosted*")).toBe("");
   });
 
   it("narrows the rewrite to the jobs it was given", async () => {
     const result = await propose({ jobs: ["nope"] });
     expect(result.status).toBe("no-changes");
-    expect(git(checkout, "branch", "--list", "gh-runner/target-self-hosted")).toBe("");
+    expect(git(checkout, "branch", "--list", "gh-runner/target-self-hosted*")).toBe("");
   });
 
   it("refuses to stack a second PR on an existing branch", async () => {
-    await propose();
+    const first = await propose();
     const second = await propose();
     expect(second.status).toBe("branch-exists");
+    if (second.status !== "branch-exists" || first.status !== "opened") return;
+    // Reported as the branch that is actually on the remote, not ours.
+    expect(second.branch).toBe(first.branch);
+  });
+
+  it("works when an earlier run left its branch and worktree behind", async () => {
+    // Exactly what a killed run leaves: a local branch and a stale worktree.
+    const stale = await mkdtemp(join(tmpdir(), "gh-runner-stale-"));
+    git(checkout, "worktree", "add", "--quiet", "-b", "gh-runner/target-self-hosted", stale);
+
+    const result = await propose();
+
+    expect(result.status).toBe("opened");
+    if (result.status !== "opened") return;
+    expect(result.branch).not.toBe("gh-runner/target-self-hosted");
+    expect(git(checkout, "branch", "--list", result.branch)).toBe("");
+
+    git(checkout, "worktree", "remove", "--force", stale);
+    git(checkout, "branch", "-D", "gh-runner/target-self-hosted");
+    await rm(stale, { recursive: true, force: true });
+  });
+
+  it("gives each run its own branch", async () => {
+    const first = await propose();
+    if (first.status !== "opened") throw new Error(`expected a PR, got ${first.status}`);
+
+    // A pushed branch would short-circuit the second run, so start clean.
+    git(checkout, "push", "--quiet", "origin", "--delete", first.branch);
+    git(checkout, "fetch", "--quiet", "--prune", "origin");
+
+    const second = await propose();
+    if (second.status !== "opened") throw new Error(`expected a PR, got ${second.status}`);
+    expect(second.branch).not.toBe(first.branch);
   });
 
   it("reports no changes when every job already targets the runner", async () => {

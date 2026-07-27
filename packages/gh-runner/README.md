@@ -178,12 +178,14 @@ When **no** job targets this runner, it offers to open a pull request:
 
 ```
 Update 3 jobs to runs-on: [self-hosted, gh-runner] and open a pull request? [y/N] y
-==> Preparing a workflow fix on gh-runner/target-self-hosted...
+==> Preparing a workflow fix on gh-runner/target-self-hosted-9f3c1ab7...
     ✓ .github/workflows/ci.yml → build now targets this runner
     Pull request opened: https://github.com/octocat/thing/pull/42
 ```
 
 The rewrite happens in a throwaway [`git worktree`](https://git-scm.com/docs/git-worktree) checked out from your default branch — **your working tree, index, staged changes, and current branch are never touched**, even with work in flight. The worktree and its local branch are removed on every exit path, including failures.
+
+The branch and the worktree directory both carry a random suffix, so a run that was killed before it could clean up can never block the next one. If a fix branch is already on the remote, whatever its suffix, it says so instead of stacking a second pull request on top of it.
 
 Only the bytes of each `runs-on` value are spliced, so comments, formatting, and every other line survive the edit — the diff shows one changed line per job and nothing else.
 

@@ -106,6 +106,10 @@ Once Pages is on, the site lands at **https://singerbj.github.io/gh-runner/**.
 
 The Vite build uses a relative `base`, so the same output works at a domain root or under a `/gh-runner/` project path without reconfiguration.
 
+## Security
+
+`gh-runner` hands a CI job the machine it runs on, so it has a threat model worth reading: [`SECURITY.md`](SECURITY.md) covers what it guarantees, what it deliberately doesn't, and where to report a vulnerability.
+
 ## License
 
 MIT

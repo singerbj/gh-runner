@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,11 +47,14 @@ const ok = (stdout: string): ExecResult => ({ code: 0, stdout, stderr: "" });
 
 let cacheDir = "";
 
+const CACHED = "not-really-a-tarball";
+const CACHED_SHA = createHash("sha256").update(CACHED).digest("hex");
+
 beforeEach(async () => {
   cacheDir = await mkdtemp(join(tmpdir(), "gh-runner-test-"));
   // Pre-seed the cache so no run ever reaches the network.
-  await writeFile(join(cacheDir, TARBALL), "not-really-a-tarball");
-  await writeFile(join(cacheDir, MAC_TARBALL), "not-really-a-tarball");
+  await writeFile(join(cacheDir, TARBALL), CACHED);
+  await writeFile(join(cacheDir, MAC_TARBALL), CACHED);
 });
 
 afterEach(async () => {
@@ -124,6 +129,90 @@ describe("ghRunner", () => {
     await expect(ghRunner({ ...options, allowPublic: true }, base(runner))).resolves.toMatchObject({
       runners: [{ repo: "octocat/open-source" }],
     });
+  });
+
+  it("refuses when it cannot confirm the repo is private", async () => {
+    // gh answering with nothing useful is exactly the case where the repo might
+    // be public, so an unanswered question must not read as a yes.
+    const { runner } = stubRunner({ "--json visibility": ok("") });
+    const options = { repo: "octocat/mystery", runnerVersion: VERSION, cacheDir };
+
+    await expect(ghRunner(options, base(runner))).rejects.toThrow(CliError);
+    await expect(ghRunner(options, base(runner))).rejects.toThrow(/couldn't confirm/);
+    await expect(ghRunner({ ...options, allowPublic: true }, base(runner))).resolves.toMatchObject({
+      runners: [{ repo: "octocat/mystery" }],
+    });
+  });
+
+  it("registers on an internal repo, which forks cannot reach", async () => {
+    const { runner } = stubRunner({ "--json visibility": ok("INTERNAL") });
+    await expect(
+      ghRunner({ repo: "acme/internal-thing", runnerVersion: VERSION, cacheDir }, base(runner)),
+    ).resolves.toMatchObject({ runners: [{ repo: "acme/internal-thing" }] });
+  });
+
+  it("rejects a repo that isn't OWNER/NAME before it reaches an API path", async () => {
+    const { runner } = stubRunner();
+    await expect(
+      ghRunner(
+        { repo: "octocat/thing/../../evil", runnerVersion: VERSION, cacheDir },
+        base(runner),
+      ),
+    ).rejects.toThrow(/OWNER\/NAME/);
+  });
+
+  it("checks the cached runner tarball against the checksum the release publishes", async () => {
+    const { runner, calls } = stubRunner({ ".digest": ok(`sha256:${CACHED_SHA}\n`) });
+
+    await expect(
+      ghRunner({ repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir }, base(runner)),
+    ).resolves.toMatchObject({ runners: [{ mode: "native" }] });
+
+    // The digest was asked for, and the matching tarball was accepted and run.
+    expect(calls.some((c) => c.args.join(" ").includes("releases/tags/v2.334.0"))).toBe(true);
+    expect(calls.some((c) => c.command.endsWith("config.sh"))).toBe(true);
+  });
+
+  it("throws away a cached tarball that fails its checksum instead of unpacking it", async () => {
+    const lines: string[] = [];
+    const { runner, calls } = stubRunner({ ".digest": ok(`sha256:${"d".repeat(64)}\n`) });
+
+    // The pre-seeded cache entry is not the tarball that digest describes, so it
+    // has to be discarded and re-fetched. The replacement doesn't match either,
+    // so the run stops rather than unpacking something GitHub didn't publish.
+    await expect(
+      ghRunner(
+        { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
+        {
+          ...base(runner),
+          logger: { ...recordingLogger(lines), warn: (m: string) => lines.push(`warning: ${m}\n`) },
+          fetchImpl: (() =>
+            Promise.resolve(new Response("still not it"))) as unknown as typeof fetch,
+        },
+      ),
+    ).rejects.toThrow(/checksum mismatch/);
+
+    expect(lines.join("")).toMatch(/did not match the published checksum/);
+    // Nothing that failed its checksum survives to be picked up by the next run.
+    expect(existsSync(join(cacheDir, TARBALL))).toBe(false);
+    expect(calls.some((c) => c.command.endsWith("config.sh"))).toBe(false);
+  });
+
+  it("warns, but carries on, when a release publishes no checksum", async () => {
+    const lines: string[] = [];
+    const { runner } = stubRunner({ ".digest": ok(""), ".body": ok("no digests here") });
+
+    await expect(
+      ghRunner(
+        { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
+        {
+          ...base(runner),
+          logger: { ...recordingLogger(lines), warn: (m: string) => lines.push(`warning: ${m}\n`) },
+        },
+      ),
+    ).resolves.toMatchObject({ runners: [{ mode: "native" }] });
+
+    expect(lines.join("")).toMatch(/doesn't publish a\n\s*checksum/);
   });
 
   it("turns a failed registration into a readable error", async () => {

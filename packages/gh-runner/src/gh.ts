@@ -1,8 +1,39 @@
+import { normalizeSha256 } from "./download.js";
 import { CliError } from "./errors.js";
 import { CommandFailedError, execCapture, execCommand, execSucceeds } from "./exec.js";
 import type { CommandRunner, ExecOptions } from "./exec.js";
+import { assertRunnerVersion } from "./platform.js";
 
+/**
+ * `UNKNOWN` means the question wasn't answered — not that the repo is safe.
+ * Callers that gate on visibility have to treat it as the unknown it is.
+ */
 export type RepoVisibility = "PUBLIC" | "PRIVATE" | "INTERNAL" | "UNKNOWN";
+
+/**
+ * Digs the SHA-256 of one release asset out of an `actions/runner` release
+ * body. The release notes carry `<!-- BEGIN SHA linux-x64 -->…` markers; a line
+ * naming the asset next to a digest is accepted as a second shape, since the
+ * notes are prose and prose gets reformatted.
+ */
+export function parseDigestFromReleaseBody(body: string, assetName: string): string | null {
+  const key = /^actions-runner-([a-z0-9]+-[a-z0-9]+)-/.exec(assetName)?.[1];
+  if (key) {
+    const marked = new RegExp(
+      `<!--\\s*BEGIN SHA ${key}\\s*-->\\s*([0-9a-fA-F]{64})\\s*<!--\\s*END SHA ${key}\\s*-->`,
+    ).exec(body);
+    const digest = normalizeSha256(marked?.[1]);
+    if (digest) return digest;
+  }
+
+  for (const line of body.split("\n")) {
+    if (!line.includes(assetName)) continue;
+    const digest = normalizeSha256(/\b([0-9a-fA-F]{64})\b/.exec(line)?.[1]);
+    if (digest) return digest;
+  }
+
+  return null;
+}
 
 export interface GhClientOptions {
   runner?: CommandRunner;
@@ -124,10 +155,41 @@ export class GhClient {
       if (!version) {
         throw new CliError("could not determine a runner version");
       }
-      return version;
+      return assertRunnerVersion(version);
     } catch (error) {
       if (error instanceof CliError) throw error;
       throw new CliError("couldn't reach the GitHub API to find the latest runner version");
+    }
+  }
+
+  /**
+   * The published SHA-256 of one `actions/runner` release asset, or null when
+   * the release doesn't carry one.
+   *
+   * Two sources, because only the first is structured: the `digest` field the
+   * releases API attaches to an asset, then the digests the release notes
+   * publish. Null is a real answer — a release genuinely may not say — and the
+   * caller decides what an unverifiable download is worth.
+   */
+  async runnerAssetDigest(version: string, assetName: string): Promise<string | null> {
+    const path = `repos/actions/runner/releases/tags/v${assertRunnerVersion(version)}`;
+    const selector = `select(.name == ${JSON.stringify(assetName)})`;
+
+    try {
+      const reported = await this.api(path, {
+        jq: `.assets[] | ${selector} | .digest // empty`,
+      });
+      const digest = normalizeSha256(reported.split("\n")[0]);
+      if (digest) return digest;
+    } catch {
+      // Fall through: an older API, or no such asset. The body may still say.
+    }
+
+    try {
+      const body = await this.api(path, { jq: ".body // empty" });
+      return parseDigestFromReleaseBody(body, assetName);
+    } catch {
+      return null;
     }
   }
 

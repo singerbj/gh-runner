@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { CliError } from "../src/errors.js";
 import type { CommandRunner, ExecResult } from "../src/exec.js";
-import { GhClient } from "../src/gh.js";
+import { GhClient, parseDigestFromReleaseBody } from "../src/gh.js";
 
 type Reply = ExecResult | ((args: readonly string[]) => ExecResult);
 
@@ -76,6 +76,69 @@ describe("GhClient.visibility", () => {
   it("reports UNKNOWN rather than throwing when gh fails", async () => {
     const { runner } = fakeRunner({}, errResult);
     await expect(new GhClient({ runner }).visibility("a/b")).resolves.toBe("UNKNOWN");
+  });
+});
+
+describe("parseDigestFromReleaseBody", () => {
+  const DIGEST = "a".repeat(64);
+  const ASSET = "actions-runner-linux-x64-2.334.0.tar.gz";
+
+  it("reads the SHA markers the release notes carry", () => {
+    const body = `## v2.334.0\n\n<!-- BEGIN SHA linux-x64 -->${DIGEST}<!-- END SHA linux-x64 -->\n`;
+    expect(parseDigestFromReleaseBody(body, ASSET)).toBe(DIGEST);
+  });
+
+  it("takes the marker for this asset's platform, never a neighbour's", () => {
+    const other = "b".repeat(64);
+    const body =
+      `<!-- BEGIN SHA linux-arm64 -->${other}<!-- END SHA linux-arm64 -->\n` +
+      `<!-- BEGIN SHA linux-x64 -->${DIGEST}<!-- END SHA linux-x64 -->\n`;
+    expect(parseDigestFromReleaseBody(body, ASSET)).toBe(DIGEST);
+  });
+
+  it("falls back to a line that names the asset", () => {
+    expect(parseDigestFromReleaseBody(`| ${ASSET} | ${DIGEST} |`, ASSET)).toBe(DIGEST);
+  });
+
+  it("returns null rather than guessing when the notes say nothing", () => {
+    expect(parseDigestFromReleaseBody("Nothing to see here.", ASSET)).toBeNull();
+    // A digest for some other asset is not this asset's digest.
+    expect(parseDigestFromReleaseBody(`| other.tar.gz | ${DIGEST} |`, ASSET)).toBeNull();
+  });
+});
+
+describe("GhClient.runnerAssetDigest", () => {
+  const DIGEST = "c".repeat(64);
+  const ASSET = "actions-runner-linux-x64-2.334.0.tar.gz";
+
+  it("prefers the digest the releases API reports, sha256: prefix and all", async () => {
+    const { runner } = fakeRunner({ ".digest": okResult(`sha256:${DIGEST.toUpperCase()}\n`) });
+    await expect(new GhClient({ runner }).runnerAssetDigest("2.334.0", ASSET)).resolves.toBe(
+      DIGEST,
+    );
+  });
+
+  it("falls back to the release notes when the API reports no digest", async () => {
+    const { runner } = fakeRunner({
+      ".digest": okResult(""),
+      ".body": okResult(`<!-- BEGIN SHA linux-x64 -->${DIGEST}<!-- END SHA linux-x64 -->`),
+    });
+    await expect(new GhClient({ runner }).runnerAssetDigest("2.334.0", ASSET)).resolves.toBe(
+      DIGEST,
+    );
+  });
+
+  it("returns null when neither source has one", async () => {
+    const { runner } = fakeRunner({}, errResult);
+    await expect(new GhClient({ runner }).runnerAssetDigest("2.334.0", ASSET)).resolves.toBeNull();
+  });
+
+  it("refuses a version that isn't one, so nothing else can reach the API path", async () => {
+    const { runner, calls } = fakeRunner({}, errResult);
+    await expect(
+      new GhClient({ runner }).runnerAssetDigest("2.334.0/../../evil", ASSET),
+    ).rejects.toThrow(CliError);
+    expect(calls).toHaveLength(0);
   });
 });
 

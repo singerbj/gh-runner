@@ -21,7 +21,7 @@ import { silentLogger } from "./logger.js";
 import type { Logger } from "./logger.js";
 import { promptMultiSelect } from "./menu.js";
 import type { MenuChoice } from "./menu.js";
-import { emptyOptions } from "./options.js";
+import { assertRepoSlug, emptyOptions } from "./options.js";
 import type { RunnerOptions } from "./options.js";
 import {
   defaultCacheDir,
@@ -52,6 +52,8 @@ export interface RunContext {
   env?: NodeJS.ProcessEnv;
   /** Receives each spawned runner child so callers can forward signals. */
   onRunnerSpawn?: SpawnHook;
+  /** Fetches the runner tarball. Defaults to global `fetch`. */
+  fetchImpl?: typeof fetch;
   /** How to ask before opening the workflow PR. Defaults to never asking. */
   confirm?: Confirm;
   /**
@@ -148,18 +150,26 @@ export async function ghRunner(
   await gh.preflight();
   throwIfAborted();
 
-  const repo = options.repo ?? (await gh.detectRepo(options.cwd ?? process.cwd()));
-  if (!repo) {
+  const detected = options.repo ?? (await gh.detectRepo(options.cwd ?? process.cwd()));
+  if (!detected) {
     throw new CliError("couldn't resolve the GitHub repo for this directory");
   }
+  // parseArgs checks `--repo`, but ghRunner is also a library entry point, and
+  // this value is about to become a URL and an API path.
+  const repo = assertRepoSlug(detected);
 
   // Registering on a public repo lets any fork PR execute arbitrary code here.
   const visibility = await gh.visibility(repo);
-  if (visibility === "PUBLIC" && !options.allowPublic) {
+  if (visibility !== "PRIVATE" && visibility !== "INTERNAL" && !options.allowPublic) {
     throw new CliError(
-      `${repo} is PUBLIC. Any fork could open a PR and run arbitrary code on this\n` +
-        `       machine. Refusing. Pass --allow-public only if you fully trust every\n` +
-        `       contributor who can open a pull request.`,
+      visibility === "PUBLIC"
+        ? `${repo} is PUBLIC. Any fork could open a PR and run arbitrary code on this\n` +
+            `       machine. Refusing. Pass --allow-public only if you fully trust every\n` +
+            `       contributor who can open a pull request.`
+        : `couldn't confirm whether ${repo} is private, so this could be a public repo —\n` +
+            `       where any fork could open a PR and run arbitrary code on this machine.\n` +
+            `       Refusing. Check \`gh auth status\` and that you can see ${repo}, or pass\n` +
+            `       --allow-public to register anyway.`,
     );
   }
   throwIfAborted();
@@ -314,6 +324,7 @@ export async function ghRunner(
     env,
     ...(signal ? { signal } : {}),
     ...(context.onRunnerSpawn ? { onRunnerSpawn: context.onRunnerSpawn } : {}),
+    ...(context.fetchImpl ? { fetchImpl: context.fetchImpl } : {}),
   };
 
   // Every runner gets to finish and clean up even if a sibling blows up.
@@ -435,6 +446,7 @@ interface TargetRun {
   env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   onRunnerSpawn?: SpawnHook;
+  fetchImpl?: typeof fetch;
 }
 
 /** Downloads, registers, and runs a runner directly on this machine. */
@@ -445,14 +457,34 @@ async function runNativeTarget(run: TargetRun & { runnerVersion: string }): Prom
 
   const cacheDir = options.cacheDir ?? defaultCacheDir(env);
   const archive = runnerArchive(platform, run.runnerVersion);
+
+  // Whatever this resolves to is unpacked and executed as the user running the
+  // command, so it is checked against what GitHub published — on a cache hit as
+  // much as on a download.
+  const expectedSha256 = await gh.runnerAssetDigest(run.runnerVersion, archive).catch(() => null);
+  if (!expectedSha256) {
+    logger.warn(
+      `${plan.prefix ?? ""}the actions/runner v${run.runnerVersion} release doesn't publish a\n` +
+        `         checksum for ${archive}, so it can't be verified before it runs.`,
+    );
+  }
+
   const cached = await downloadCached({
     url: runnerDownloadUrl(platform, run.runnerVersion),
     cacheDir,
     fileName: archive,
+    ...(expectedSha256 ? { expectedSha256 } : {}),
+    ...(run.fetchImpl ? { fetchImpl: run.fetchImpl } : {}),
     ...(signal ? { signal } : {}),
     onDownloadStart: () => {
       say(
         `Downloading runner v${run.runnerVersion} (${platform.os}-${platform.arch})... ${logger.styles.dim("cached for next time")}`,
+      );
+    },
+    onCacheRejected: ({ path }) => {
+      logger.warn(
+        `${plan.prefix ?? ""}the cached ${archive} did not match the published checksum.\n` +
+          `         Deleted ${path} and downloading it again.`,
       );
     },
   });
@@ -539,7 +571,7 @@ async function runNativeTarget(run: TargetRun & { runnerVersion: string }): Prom
  * API rather than `config.sh remove`, because by then the container is gone.
  */
 async function runDockerTarget(run: TargetRun): Promise<RunSummary> {
-  const { plan, repo, options, logger, commandRunner, gh, cleanupGh } = run;
+  const { plan, repo, options, logger, commandRunner, gh, cleanupGh, env } = run;
   const say = (message: string) => logger.say(`${plan.prefix ?? ""}${message}`);
   const image = options.dockerImage ?? DEFAULT_IMAGE;
   const containerName = `${plan.runnerName}`;
@@ -566,6 +598,7 @@ async function runDockerTarget(run: TargetRun): Promise<RunSummary> {
       },
       run.onRunnerSpawn,
       plan.prefix,
+      env,
     );
   } finally {
     await removeContainer(commandRunner, containerName);

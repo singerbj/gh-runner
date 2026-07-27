@@ -5,6 +5,8 @@ import {
   assertDockerAvailable,
   containerScript,
   dockerRunArgs,
+  dockerRunEnv,
+  runInDocker,
 } from "../src/docker.js";
 import { CliError } from "../src/errors.js";
 import type { CommandRunner, ExecResult } from "../src/exec.js";
@@ -89,15 +91,17 @@ describe("dockerRunArgs", () => {
     expect(args.join(" ")).not.toContain("docker.sock");
   });
 
-  it("passes the token and labels as environment, not as shell text", () => {
+  it("forwards the token and labels by name, keeping them out of argv", () => {
     const args = dockerRunArgs(RUN);
-    expect(args).toContain("GHR_TOKEN=REG123");
-    expect(args).toContain("GHR_URL=https://github.com/octocat/thing");
-    expect(args).toContain("GHR_LABELS=gh-runner,gh-runner-linux,my-box");
-    expect(args).toContain("GHR_NAME=my-box-docker-123");
+    for (const name of ["GHR_URL", "GHR_TOKEN", "GHR_NAME", "GHR_LABELS"]) {
+      expect(args[args.indexOf(name) - 1]).toBe("-e");
+    }
 
-    const script = args[args.length - 1] ?? "";
-    expect(script).not.toContain("REG123");
+    // argv is world-readable through `ps` and /proc, so a live registration
+    // token must not appear anywhere in it — nor in the script, nor as a value.
+    expect(args.join(" ")).not.toContain("REG123");
+    expect(args).not.toContain("GHR_TOKEN=REG123");
+    expect(args[args.length - 1] ?? "").not.toContain("REG123");
   });
 
   it("overrides the entrypoint so any image behaves the same", () => {
@@ -117,5 +121,32 @@ describe("dockerRunArgs", () => {
     const args = dockerRunArgs({ ...RUN, image: "my/runner:1" });
     expect(args).toContain("my/runner:1");
     expect(args).not.toContain(DEFAULT_IMAGE);
+  });
+});
+
+describe("dockerRunEnv", () => {
+  it("carries every value the container reads by name", () => {
+    const env = dockerRunEnv(RUN, { PATH: "/usr/bin" });
+    expect(env["GHR_TOKEN"]).toBe("REG123");
+    expect(env["GHR_URL"]).toBe("https://github.com/octocat/thing");
+    expect(env["GHR_NAME"]).toBe("my-box-docker-123");
+    expect(env["GHR_LABELS"]).toBe("gh-runner,gh-runner-linux,my-box");
+    // The docker client still needs the rest of the environment to find itself.
+    expect(env["PATH"]).toBe("/usr/bin");
+  });
+});
+
+describe("runInDocker", () => {
+  it("spawns docker with the token in its environment and not its argv", async () => {
+    let seen: { args: readonly string[]; env: NodeJS.ProcessEnv | undefined } | undefined;
+    const runner: CommandRunner = (_command, args, options) => {
+      seen = { args, env: options?.env };
+      return Promise.resolve(ok());
+    };
+
+    await runInDocker(runner, RUN, undefined, undefined, { PATH: "/usr/bin" });
+
+    expect(seen?.args.join(" ")).not.toContain("REG123");
+    expect(seen?.env?.["GHR_TOKEN"]).toBe("REG123");
   });
 });

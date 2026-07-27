@@ -11,7 +11,15 @@ export {
 export type { PlatformOption, ResolvedTarget, TargetMode, RequestedTargets } from "./targets.js";
 export { promptMultiSelect, initialState, reduce, renderLines, selected } from "./menu.js";
 export type { MenuChoice, MenuState, MenuKey } from "./menu.js";
-export { parseArgs, parseLabels, emptyOptions, USAGE } from "./options.js";
+export {
+  parseArgs,
+  parseLabels,
+  emptyOptions,
+  assertRepoSlug,
+  assertLabel,
+  assertRunnerName,
+  USAGE,
+} from "./options.js";
 export type { RunnerOptions, ParsedArgs } from "./options.js";
 export {
   DEFAULT_LABEL,
@@ -21,7 +29,7 @@ export {
   osForLabel,
   FIX_BRANCH_PREFIX,
 } from "./constants.js";
-export { GhClient } from "./gh.js";
+export { GhClient, parseDigestFromReleaseBody } from "./gh.js";
 export type { GhClientOptions, RepoVisibility } from "./gh.js";
 export {
   inspectWorkflows,
@@ -44,15 +52,24 @@ export {
   runnerScript,
   implicitLabels,
   slugify,
+  assertRunnerVersion,
 } from "./platform.js";
 export type { RunnerPlatform, RunnerOs, RunnerArch } from "./platform.js";
-export { downloadCached, extractArchive } from "./download.js";
+export {
+  downloadCached,
+  extractArchive,
+  sha256File,
+  isSha256,
+  normalizeSha256,
+} from "./download.js";
+export type { DownloadOptions } from "./download.js";
 export {
   DEFAULT_IMAGE,
   archForDockerPlatform,
   assertDockerAvailable,
   containerScript,
   dockerRunArgs,
+  dockerRunEnv,
   runInDocker,
   removeContainer,
 } from "./docker.js";

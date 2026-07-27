@@ -1,6 +1,7 @@
 import { DEFAULT_LABEL, OS_LABELS } from "./constants.js";
 import { DEFAULT_IMAGE } from "./docker.js";
 import { CliError } from "./errors.js";
+import { assertRunnerVersion } from "./platform.js";
 import { parseTargetNames } from "./targets.js";
 
 export interface RunnerOptions {
@@ -9,7 +10,10 @@ export interface RunnerOptions {
    * the runner lives as long as the command does.
    */
   once: boolean;
-  /** Register on a public repo, where any fork PR could run code here. */
+  /**
+   * Register even when the repo isn't confirmed private — either because it is
+   * public, where any fork PR could run code here, or because `gh` couldn't say.
+   */
   allowPublic: boolean;
   /** OWNER/NAME. When omitted, detected from `cwd`. */
   repo: string | undefined;
@@ -76,7 +80,7 @@ OPTIONS
   --labels a,b,c         Extra labels in addition to gh-runner and the host label
   --repo OWNER/NAME      Target a specific repo instead of detecting from cwd
   --name NAME            Runner name to register (default: <host>-<pid>)
-  --allow-public         Permit registration on a public repo (dangerous)
+  --allow-public         Register even if the repo isn't confirmed private (dangerous)
   --docker-image IMAGE   Image for containerised runners (default: ${DEFAULT_IMAGE})
   --docker-platform P    Container platform, e.g. linux/amd64
   --runner-version X.Y.Z Pin the runner version (default: latest release)
@@ -136,6 +140,33 @@ export function assertRepoSlug(repo: string): string {
   return repo;
 }
 
+/**
+ * The characters GitHub accepts in a runner label. Worth enforcing here rather
+ * than letting the runner reject it later: `--fix-label` is spliced into YAML
+ * that becomes a pull request, and a label carrying `]` or a newline would
+ * write something other than the `runs-on` it looks like.
+ */
+const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+
+export function assertLabel(flag: string, label: string): string {
+  if (!NAME_PATTERN.test(label)) {
+    throw new CliError(
+      `${flag} expects letters, digits, dots, dashes, or underscores, got: ${label}`,
+    );
+  }
+  return label;
+}
+
+/** Also the container name on the Docker path, which Docker constrains the same way. */
+export function assertRunnerName(name: string): string {
+  if (!NAME_PATTERN.test(name)) {
+    throw new CliError(
+      `--name expects letters, digits, dots, dashes, or underscores, got: ${name}`,
+    );
+  }
+  return name;
+}
+
 export function parseArgs(argv: readonly string[]): ParsedArgs {
   const options = emptyOptions();
 
@@ -161,15 +192,19 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         i += 1;
         break;
       case "--labels":
-        options.labels = parseLabels(requireValue("--labels", argv[i + 1]));
+        options.labels = parseLabels(requireValue("--labels", argv[i + 1])).map((label) =>
+          assertLabel("--labels", label),
+        );
         i += 1;
         break;
       case "--name":
-        options.name = requireValue("--name", argv[i + 1]);
+        options.name = assertRunnerName(requireValue("--name", argv[i + 1]));
         i += 1;
         break;
       case "--runner-version":
-        options.runnerVersion = requireValue("--runner-version", argv[i + 1]).replace(/^v/, "");
+        options.runnerVersion = assertRunnerVersion(
+          requireValue("--runner-version", argv[i + 1]).replace(/^v/, ""),
+        );
         i += 1;
         break;
       case "--cache-dir":
@@ -191,7 +226,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         i += 1;
         break;
       case "--fix-label":
-        options.fixLabel = requireValue("--fix-label", argv[i + 1]);
+        options.fixLabel = assertLabel("--fix-label", requireValue("--fix-label", argv[i + 1]));
         i += 1;
         break;
       case "--all":

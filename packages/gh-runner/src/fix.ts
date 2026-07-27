@@ -8,6 +8,7 @@ import { CommandFailedError, execCapture } from "./exec.js";
 import type { CommandRunner, ExecOptions } from "./exec.js";
 import type { GhClient } from "./gh.js";
 import type { Logger } from "./logger.js";
+import { assertLabel } from "./options.js";
 import { applyRunsOnFix, inspectWorkflows } from "./workflows.js";
 import type { RunsOnTarget } from "./workflows.js";
 
@@ -53,7 +54,10 @@ export type WorkflowFixResult =
  * what stops the next one.
  */
 export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<WorkflowFixResult> {
-  const { repo, repoRoot, label, commandRunner, gh, logger, signal } = options;
+  const { repo, repoRoot, commandRunner, gh, logger, signal } = options;
+  // This is spliced into YAML that becomes a commit; parseArgs checks it, but
+  // this is also a public entry point.
+  const label = assertLabel("--fix-label", options.label);
   const runId = randomBytes(4).toString("hex");
   const branch = options.branch ?? `${FIX_BRANCH_PREFIX}-${runId}`;
   const exec: ExecOptions = { cwd: repoRoot, ...(signal ? { signal } : {}) };

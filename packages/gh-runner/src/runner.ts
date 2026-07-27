@@ -363,6 +363,23 @@ async function choosePlatforms(input: ChooseInput): Promise<RunnerOs[]> {
   }
 
   if (input.selectPlatforms) {
+    const available = platformOptions.filter((option) => option.available);
+
+    // A menu with one answer is a keypress that teaches nothing. Say what this
+    // machine can serve, and why the rest are out, then get on with it.
+    if (available.length === 1 && available[0]) {
+      const only = available[0];
+      const { dim } = input.logger.styles;
+      const width = Math.max(...platformOptions.map((option) => option.name.length));
+
+      input.logger.say(`${only.name} is the only platform this machine can serve.`);
+      for (const option of platformOptions) {
+        if (option.available) continue;
+        input.logger.raw(`    ${dim(`✗ ${option.name.padEnd(width)}  ${option.detail}`)}\n`);
+      }
+      return [only.os];
+    }
+
     const choices: Array<MenuChoice<RunnerOs>> = platformOptions.map((option) => ({
       value: option.os,
       label: option.name,

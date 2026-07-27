@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CliError } from "../src/errors.js";
 import type { CommandRunner, ExecResult } from "../src/exec.js";
 import { GhClient } from "../src/gh.js";
+import { silentLogger } from "../src/logger.js";
 import { ghRunner } from "../src/runner.js";
 import type { RunContext } from "../src/runner.js";
 import type { RunnerPlatform } from "../src/platform.js";
@@ -53,6 +54,13 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await rm(cacheDir, { recursive: true, force: true });
+});
+
+/** A logger that keeps everything it was told, for asserting on messages. */
+const recordingLogger = (lines: string[]) => ({
+  ...silentLogger,
+  say: (message: string) => lines.push(`${message}\n`),
+  raw: (message: string) => lines.push(message),
 });
 
 const base = (runner: CommandRunner, platform: RunnerPlatform = LINUX): RunContext => ({
@@ -225,12 +233,58 @@ describe("platform selection", () => {
     expect(runners.map((r) => r.platform.os)).toEqual(["linux"]);
   });
 
+  it("skips the menu when there's only one answer, and says why", async () => {
+    // A Linux box with no Docker can only ever be a Linux runner.
+    const { runner } = stubRunner({ "docker --version": { code: 1, stdout: "", stderr: "" } });
+    let asked = 0;
+    const lines: string[] = [];
+
+    const { runners } = await ghRunner(
+      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
+      {
+        ...base(runner),
+        logger: recordingLogger(lines),
+        selectPlatforms: () => {
+          asked += 1;
+          return Promise.resolve([]);
+        },
+      },
+    );
+
+    expect(asked).toBe(0);
+    expect(runners.map((r) => r.platform.os)).toEqual(["linux"]);
+
+    const said = lines.join("");
+    expect(said).toContain("Linux is the only platform this machine can serve");
+    expect(said).toContain("✗ macOS");
+    expect(said).toContain("✗ Windows");
+  });
+
+  it("still asks when the machine can serve more than one platform", async () => {
+    const { runner } = stubRunner({ "runners?per_page": ok("") });
+    let asked = 0;
+
+    await ghRunner(
+      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
+      {
+        ...base(runner, MAC),
+        selectPlatforms: () => {
+          asked += 1;
+          return Promise.resolve(["osx"]);
+        },
+      },
+    );
+
+    expect(asked).toBe(1);
+  });
+
   it("treats a cancelled menu as an interrupt", async () => {
+    // A Mac with Docker has two options, so the menu really is shown.
     const { runner } = stubRunner();
     await expect(
       ghRunner(
         { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
-        { ...base(runner), selectPlatforms: () => Promise.resolve(null) },
+        { ...base(runner, MAC), selectPlatforms: () => Promise.resolve(null) },
       ),
     ).rejects.toThrow(/interrupted/);
   });

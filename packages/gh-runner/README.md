@@ -49,6 +49,14 @@ With no platform named and a terminal to draw on, it asks:
 
 Your own OS is pre-ticked, so the common case is one keypress. Anything this machine can't be is shown with the reason and can't be selected.
 
+When there's only one possible answer — a Linux box, or a Mac without Docker running — it doesn't ask at all. It says what it's serving and why the rest are out, then gets on with it:
+
+```
+==> Linux is the only platform this machine can serve.
+    ✗ macOS    needs a macOS machine — macOS can't be containerised
+    ✗ Windows  needs a Windows machine — Windows containers only run on Windows
+```
+
 To skip the menu, name the platforms — as bare words or with `--os`:
 
 ```bash

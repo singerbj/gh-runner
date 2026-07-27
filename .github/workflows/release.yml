@@ -51,6 +51,23 @@ jobs:
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # Without this, a missing secret surfaces as `npm error code ENEEDAUTH`
+      # after a full build — technically accurate, useless as a next step.
+      - name: Check the npm token exists
+        if: steps.version.outputs.should_publish == 'true'
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "NPM_TOKEN is set."
+            exit 0
+          fi
+          echo "::error::NPM_TOKEN isn't set, so ${{ steps.version.outputs.name }}@${{ steps.version.outputs.version }} can't be published."
+          echo "Create an npm automation token with publish rights, then add it"
+          echo "at Settings -> Secrets and variables -> Actions -> New repository"
+          echo "secret, named NPM_TOKEN. Re-run this workflow afterwards."
+          exit 1
+
       - name: Publish
         if: steps.version.outputs.should_publish == 'true'
         run: npm publish --workspace gh-runner --provenance --access public

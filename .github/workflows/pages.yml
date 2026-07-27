@@ -37,12 +37,26 @@ jobs:
 
       - run: npx turbo run build --filter=@gh-runner/web
 
-      # `enablement: true` turns Pages on with GitHub Actions as the source, so
-      # the first run of this workflow doesn't fail on a repo where nobody has
-      # been into Settings yet.
+      # Pages has to be switched on once, by hand, at
+      # Settings -> Pages -> Source: GitHub Actions. `enablement: true` looks
+      # like it would do that for you, but creating a Pages site needs admin
+      # rights and GITHUB_TOKEN doesn't have them — it fails with "Resource not
+      # accessible by integration". So: check first, and say what to click.
+      - name: Check Pages is enabled
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/pages" > /dev/null 2>&1; then
+            echo "Pages is enabled."
+            exit 0
+          fi
+          echo "::error::GitHub Pages isn't enabled for this repository."
+          echo "Enable it once at Settings -> Pages -> Build and deployment ->"
+          echo "Source: GitHub Actions, then re-run this workflow. A workflow"
+          echo "token can't do it: creating a Pages site requires admin rights."
+          exit 1
+
       - uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
       - name: Check the build produced a site
         run: |

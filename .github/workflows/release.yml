@@ -1,0 +1,73 @@
+name: Release
+
+# Publishes packages/gh-runner to npm whenever main lands a commit that
+# bumps its version. Re-runs on an unchanged version are a no-op, so merging
+# unrelated work never republishes.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  # Required for npm provenance attestations.
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+
+      - name: Verify
+        run: npx turbo run typecheck test build
+
+      - name: Resolve the version to publish
+        id: version
+        run: |
+          name=$(node -p "require('./packages/gh-runner/package.json').name")
+          version=$(node -p "require('./packages/gh-runner/package.json').version")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          if npm view "$name@$version" version --json > /dev/null 2>&1; then
+            echo "$name@$version is already on npm — nothing to publish."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$name@$version is new — publishing."
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.version.outputs.should_publish == 'true'
+        run: npm publish --workspace gh-runner --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Tag the release
+        if: steps.version.outputs.should_publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG already exists."
+            exit 0
+          fi
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            --target "$GITHUB_SHA"

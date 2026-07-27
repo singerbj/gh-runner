@@ -69,14 +69,21 @@ gh-runner --repo owner/name
 
 ## Releasing
 
-`main` is the release branch. Bump the version in `packages/gh-runner/package.json` and merge to `main` — the [Release workflow](.github/workflows/release.yml) then:
+`main` is the release branch, and the version bumps itself. Merge a change to `packages/gh-runner` and the [Release workflow](.github/workflows/release.yml):
 
 1. typechecks, tests, and builds every package;
-2. checks whether that exact version already exists on npm and stops if it does;
-3. publishes with [npm provenance](https://docs.npmjs.com/generating-provenance-statements);
-4. cuts a `vX.Y.Z` GitHub release with generated notes.
+2. asks npm what version is published and bumps one step past it;
+3. commits that bump to `main` as `Release vX.Y.Z`;
+4. publishes with [npm provenance](https://docs.npmjs.com/generating-provenance-statements);
+5. cuts a `vX.Y.Z` GitHub release with generated notes.
 
-Merges that don't change the version publish nothing, so unrelated work can land freely.
+A patch, unless you say otherwise. Put `[minor]` or `[major]` anywhere in a commit message and the bump grows to match — every commit since the last release counts, so it still works when the merge commit buries it. Running the workflow by hand from the Actions tab asks which step to take.
+
+Bumping `packages/gh-runner/package.json` yourself still works and still wins: a manifest ahead of npm is published exactly as written, with no bump commit. That's the way to pick a specific number.
+
+Only changes under `packages/gh-runner` (plus `package-lock.json`) trigger a release, so landing work on the landing page or the root README mints nothing. The bump commit is pushed with `GITHUB_TOKEN`, which by design starts no further workflow runs — a release can't set off another release.
+
+**If `main` is protected**, allow the GitHub Actions bot to push to it, or the workflow stops before publishing and says so. Bumping the manifest by hand in the PR is the way through otherwise.
 
 **Required repository secret:** `NPM_TOKEN`, added at **Settings → Secrets and variables → Actions**.
 

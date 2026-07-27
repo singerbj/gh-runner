@@ -2,6 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { LineCounter, isMap, isScalar, parseDocument } from "yaml";
 import type { Pair } from "yaml";
+import type { RunnerOs } from "./platform.js";
 
 export interface RunsOnTarget {
   /** Workflow file, relative to the repo root. */
@@ -58,6 +59,50 @@ export interface WorkflowParseResult {
 const WORKFLOW_EXTENSIONS = [".yml", ".yaml"];
 
 const isExpression = (value: string): boolean => value.includes("${{");
+
+/**
+ * The image families GitHub hosts, by the OS each one boots.
+ *
+ * Matching on the family covers every variant of a name — `macos-latest`,
+ * `macos-14`, `macos-13-xlarge`, `ubuntu-24.04-arm`, `ubuntu-latest-8-cores` —
+ * without a list that goes stale the next time GitHub ships an image.
+ */
+const HOSTED_IMAGE_FAMILIES: ReadonlyArray<readonly [string, RunnerOs]> = [
+  ["macos", "osx"],
+  ["ubuntu", "linux"],
+  ["windows", "win"],
+];
+
+/** The OS a hosted runner image boots, or null if the name isn't one of GitHub's. */
+function imageOs(label: string): RunnerOs | null {
+  const name = label.trim().toLowerCase();
+  for (const [family, os] of HOSTED_IMAGE_FAMILIES) {
+    if (name === family || name.startsWith(`${family}-`)) return os;
+  }
+  return null;
+}
+
+/**
+ * The OS a GitHub-hosted `runs-on` asks for, or null when nothing in it names a
+ * hosted image — a runner-group label, or a larger runner someone named
+ * themselves — and when two labels disagree about the OS.
+ *
+ * This is what makes a macOS build stay a macOS build: the job's own image name
+ * says which platform it needs, so the rewrite can pin it to that platform's
+ * runner instead of whichever machine happens to be free.
+ */
+export function hostedRunnerOs(labels: readonly string[]): RunnerOs | null {
+  let found: RunnerOs | null = null;
+
+  for (const label of labels) {
+    const os = imageOs(label);
+    if (os === null) continue;
+    if (found !== null && found !== os) return null;
+    found = os;
+  }
+
+  return found;
+}
 
 interface ResolvedLabels {
   labels: string[];
@@ -301,21 +346,27 @@ export async function inspectWorkflows(
 /**
  * Rewrites the given `runs-on` values to `[self-hosted, <label>]`.
  *
+ * `label` can be a function, which is how jobs in one file end up with
+ * different labels — a macOS job and a Linux job each get their own.
+ *
  * Splices only the bytes each value occupies, so comments, formatting, and
  * every other line in the file survive untouched.
  */
 export function applyRunsOnFix(
   source: string,
   targets: readonly RunsOnTarget[],
-  label: string,
+  label: string | ((target: RunsOnTarget) => string),
 ): string {
+  const labelFor = typeof label === "function" ? label : () => label;
+
   // Back to front, so an earlier splice can't shift a later target's offsets.
   const ordered = targets.toSorted((a, b) => b.range[0] - a.range[0]);
   let output = source;
 
   for (const target of ordered) {
     const [start, end] = target.range;
-    output = `${output.slice(0, start)}runs-on: [self-hosted, ${label}]${output.slice(end)}`;
+    const replacement = `runs-on: [self-hosted, ${labelFor(target)}]`;
+    output = `${output.slice(0, start)}${replacement}${output.slice(end)}`;
   }
 
   return output;

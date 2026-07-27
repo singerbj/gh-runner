@@ -25,6 +25,27 @@ const WORKFLOW = [
   "",
 ].join("\n");
 
+/** One job per platform, plus one whose runner name says nothing about an OS. */
+const MIXED_WORKFLOW = [
+  "jobs:",
+  "  mac:",
+  "    runs-on: macos-14",
+  "  linux:",
+  "    runs-on: [ubuntu-latest]",
+  "  windows:",
+  "    runs-on: windows-2022",
+  "  big:",
+  "    runs-on: our-beefy-box",
+  "",
+].join("\n");
+
+/** Replaces ci.yml on main, so a fix run sees this instead of {@link WORKFLOW}. */
+const commitWorkflow = async (body: string) => {
+  await writeFile(join(checkout, ".github", "workflows", "ci.yml"), body);
+  git(checkout, "commit", "--quiet", "-am", "workflow");
+  git(checkout, "push", "--quiet", "origin", "main");
+};
+
 const ok = (stdout = ""): ExecResult => ({ code: 0, stdout, stderr: "" });
 
 let root = "";
@@ -76,7 +97,6 @@ const propose = (overrides: Partial<Parameters<typeof proposeWorkflowFix>[0]> = 
   proposeWorkflowFix({
     repo: "octocat/thing",
     repoRoot: checkout,
-    label: "gh-runner",
     commandRunner: runner,
     gh: new GhClient({ runner }),
     logger: silentLogger,
@@ -90,7 +110,14 @@ describe("proposeWorkflowFix", () => {
     expect(result.status).toBe("opened");
     if (result.status !== "opened") return;
     expect(result.files).toEqual([".github/workflows/ci.yml"]);
-    expect(result.jobs).toEqual([{ file: ".github/workflows/ci.yml", job: "build" }]);
+    expect(result.jobs).toEqual([
+      {
+        file: ".github/workflows/ci.yml",
+        job: "build",
+        label: "gh-runner-linux",
+        from: ["ubuntu-latest"],
+      },
+    ]);
     expect(result.url).toBe("https://github.com/octocat/thing/pull/7");
 
     // Randomized, so a branch left behind by an earlier run can't collide.
@@ -102,7 +129,7 @@ describe("proposeWorkflowFix", () => {
       "show",
       `refs/remotes/origin/${result.branch}:.github/workflows/ci.yml`,
     );
-    expect(pushed).toContain("  build:\n    runs-on: [self-hosted, gh-runner]");
+    expect(pushed).toContain("  build:\n    runs-on: [self-hosted, gh-runner-linux]");
     expect(pushed).toContain("  local:\n    runs-on: [self-hosted, gh-runner]");
     expect(pushed).not.toContain("ubuntu-latest");
 
@@ -110,6 +137,65 @@ describe("proposeWorkflowFix", () => {
     expect(prCreate).toBeDefined();
     expect(prCreate).toContain("--base");
     expect(prCreate).toContain("main");
+  });
+
+  it("keeps each job on the platform it already ran on", async () => {
+    await commitWorkflow(MIXED_WORKFLOW);
+
+    const result = await propose();
+    expect(result.status).toBe("opened");
+    if (result.status !== "opened") return;
+
+    expect(result.jobs.map(({ job, label }) => [job, label])).toEqual([
+      ["mac", "gh-runner-mac"],
+      ["linux", "gh-runner-linux"],
+      ["windows", "gh-runner-windows"],
+      // Nothing in `our-beefy-box` names an OS, so any machine will do.
+      ["big", "gh-runner"],
+    ]);
+
+    const pushed = git(
+      checkout,
+      "show",
+      `refs/remotes/origin/${result.branch}:.github/workflows/ci.yml`,
+    );
+    expect(pushed).toContain("  mac:\n    runs-on: [self-hosted, gh-runner-mac]");
+    expect(pushed).toContain("  linux:\n    runs-on: [self-hosted, gh-runner-linux]");
+    expect(pushed).toContain("  windows:\n    runs-on: [self-hosted, gh-runner-windows]");
+    expect(pushed).toContain("  big:\n    runs-on: [self-hosted, gh-runner]");
+  });
+
+  it("says which platform each job wants in the PR it opens", async () => {
+    await commitWorkflow(MIXED_WORKFLOW);
+    await propose();
+
+    const create = ghCalls.find((args) => args.join(" ").includes("pr create"));
+    const body = create?.[create.indexOf("--body") + 1] ?? "";
+    const title = create?.[create.indexOf("--title") + 1] ?? "";
+
+    expect(title).toBe("Run CI on self-hosted runners");
+    expect(body).toContain("`mac` in `.github/workflows/ci.yml` → `[self-hosted, gh-runner-mac]`");
+    expect(body).toContain("was `macos-14`");
+  });
+
+  it("refuses a label that would write something other than a runs-on", async () => {
+    // The label is spliced into YAML that becomes a commit, so a `]` or a
+    // newline in it would close the sequence and write arbitrary keys. parseArgs
+    // catches this for the CLI; this is the library door onto the same splice.
+    for (const label of ["evil]\njobs: pwned", "gh runner", "-leading-dash", ""]) {
+      await expect(propose({ label })).rejects.toThrow(CliError);
+    }
+
+    // Nothing was pushed for any of them.
+    expect(git(checkout, "ls-remote", "--heads", "origin")).not.toContain("target-self-hosted");
+  });
+
+  it("lets --fix-label override the per-job choice", async () => {
+    await commitWorkflow(MIXED_WORKFLOW);
+
+    const result = await propose({ label: "gh-runner-mac" });
+    if (result.status !== "opened") throw new Error(`expected a PR, got ${result.status}`);
+    expect(new Set(result.jobs.map((entry) => entry.label))).toEqual(new Set(["gh-runner-mac"]));
   });
 
   it("never touches the working tree, the index, or the current branch", async () => {

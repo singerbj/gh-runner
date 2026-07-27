@@ -36,11 +36,12 @@ export {
   listWorkflowFiles,
   parseRunsOn,
   classifyTarget,
+  hostedRunnerOs,
   applyRunsOnFix,
 } from "./workflows.js";
 export type { WorkflowReport, RunsOnTarget, TargetVerdict } from "./workflows.js";
-export { proposeWorkflowFix } from "./fix.js";
-export type { WorkflowFixOptions, WorkflowFixResult } from "./fix.js";
+export { proposeWorkflowFix, fixLabelFor, fixLabels } from "./fix.js";
+export type { WorkflowFixOptions, WorkflowFixResult, FixedJob } from "./fix.js";
 export { createConfirm, declineAll } from "./prompt.js";
 export type { Confirm, ConfirmOptions } from "./prompt.js";
 export {

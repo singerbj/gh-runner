@@ -28,7 +28,10 @@ export interface RunnerOptions {
   fixWorkflows: "ask" | "always" | "never";
   /** Limit the fix to these job ids. Empty means every hosted job. */
   fixJobs: string[];
-  /** Label the fix PR writes into `runs-on`. Defaults to `gh-runner`. */
+  /**
+   * Forces one label into every `runs-on` the fix PR rewrites. Unset — the
+   * default — each job gets the label for the OS it already ran on.
+   */
   fixLabel: string | undefined;
   /**
    * Platforms to serve, as given on the command line. Empty means "ask", or
@@ -89,7 +92,10 @@ OPTIONS
   --fix-workflows        Open the workflow PR without asking first
   --no-fix-workflows     Never offer to open it
   --fix-jobs a,b         Limit the fix to these job ids
-  --fix-label LABEL      Label the fix PR writes (default: ${DEFAULT_LABEL})
+  --fix-label LABEL      Force one label on every job the fix PR rewrites
+                         (default: the label for the OS each job already used —
+                         ${OS_LABELS.osx} for macos-*, ${OS_LABELS.linux} for ubuntu-*,
+                         ${OS_LABELS.win} for windows-*, ${DEFAULT_LABEL} otherwise)
   -h, --help             Show this help
   -v, --version          Show the gh-runner version
 

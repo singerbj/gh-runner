@@ -1,7 +1,8 @@
+import { randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FIX_BRANCH } from "./constants.js";
+import { FIX_BRANCH_PREFIX } from "./constants.js";
 import { CliError } from "./errors.js";
 import { execCapture } from "./exec.js";
 import type { CommandRunner, ExecOptions } from "./exec.js";
@@ -17,6 +18,7 @@ export interface WorkflowFixOptions {
   label: string;
   /** Restrict the rewrite to these job ids. Empty means every hosted job. */
   jobs?: readonly string[];
+  /** Overrides the generated branch name. Used verbatim, suffix and all. */
   branch?: string;
   commandRunner: CommandRunner;
   gh: GhClient;
@@ -45,10 +47,15 @@ export type WorkflowFixResult =
  * default branch, so the user's working tree, index, and current branch are
  * never touched — even if they have uncommitted work in flight. The worktree
  * and its local branch are removed on every exit path.
+ *
+ * Both names carry a random suffix. Cleanup can only fail when the process is
+ * killed mid-run, and a leftover branch or worktree from that run must not be
+ * what stops the next one.
  */
 export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<WorkflowFixResult> {
   const { repo, repoRoot, label, commandRunner, gh, logger, signal } = options;
-  const branch = options.branch ?? FIX_BRANCH;
+  const runId = randomBytes(4).toString("hex");
+  const branch = options.branch ?? `${FIX_BRANCH_PREFIX}-${runId}`;
   const exec: ExecOptions = { cwd: repoRoot, ...(signal ? { signal } : {}) };
 
   const git = (args: string[], overrides: ExecOptions = {}) =>
@@ -63,19 +70,19 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
     throw new CliError(`couldn't fetch origin/${base} — is this checkout connected to ${repo}?`);
   }
 
-  // Someone (probably a previous run) already pushed this branch. Don't stack
-  // a second PR on top of it.
-  const remoteBranch = await commandRunner(
-    "git",
-    ["ls-remote", "--exit-code", "--heads", "origin", branch],
-    exec,
-  );
-  if (remoteBranch.code === 0) {
-    return { status: "branch-exists", branch, url: await gh.pullRequestForBranch(repo, branch) };
+  // A previous run already pushed a fix branch. Its name won't match ours, so
+  // match on the prefix instead — the point is not to stack a second PR.
+  const pushed = await pushedFixBranch(commandRunner, exec, options.branch);
+  if (pushed) {
+    return {
+      status: "branch-exists",
+      branch: pushed,
+      url: await gh.pullRequestForBranch(repo, pushed),
+    };
   }
 
   const tmpRoot = await mkdtemp(join(tmpdir(), "gh-runner-fix-"));
-  const worktree = join(tmpRoot, "workflows");
+  const worktree = join(tmpRoot, `workflows-${runId}`);
 
   try {
     await git(["worktree", "add", "--quiet", "-b", branch, worktree, `origin/${base}`]);
@@ -141,6 +148,31 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
     await commandRunner("git", ["branch", "-D", branch], exec).catch(() => {});
     await rm(tmpRoot, { recursive: true, force: true });
   }
+}
+
+/**
+ * A fix branch already on the remote, or null. With no explicit branch this
+ * matches every suffix the generator can produce, plus the unsuffixed name
+ * older versions pushed.
+ */
+async function pushedFixBranch(
+  commandRunner: CommandRunner,
+  exec: ExecOptions,
+  branch: string | undefined,
+): Promise<string | null> {
+  const pattern = branch ? `refs/heads/${branch}` : `refs/heads/${FIX_BRANCH_PREFIX}*`;
+  const result = await commandRunner(
+    "git",
+    ["ls-remote", "--heads", "origin", pattern],
+    exec,
+  ).catch(() => null);
+  if (!result || result.code !== 0) return null;
+
+  for (const line of result.stdout.split("\n")) {
+    const ref = line.split("\t")[1]?.trim();
+    if (ref?.startsWith("refs/heads/")) return ref.slice("refs/heads/".length);
+  }
+  return null;
 }
 
 /** Falls back to a bot identity only when the user has no git identity configured. */

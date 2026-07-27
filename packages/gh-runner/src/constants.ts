@@ -37,5 +37,9 @@ export const OS_NAMES: Readonly<Record<RunnerOs, string>> = {
   win: "Windows",
 };
 
-/** Branch used for the workflow-fix pull request. */
-export const FIX_BRANCH = "gh-runner/target-self-hosted";
+/**
+ * Prefix for the branch the workflow-fix pull request is opened from. Every run
+ * appends a random suffix, so a branch left behind by an earlier run — locally
+ * or on the remote — can never collide with this one.
+ */
+export const FIX_BRANCH_PREFIX = "gh-runner/target-self-hosted";

@@ -72,14 +72,19 @@ gh-runner --repo owner/name
 `main` is the release branch, and the version bumps itself. Merge a change to `packages/gh-runner` and the [Release workflow](.github/workflows/release.yml):
 
 1. typechecks, tests, and builds every package;
-2. asks npm what version is published and bumps one step past it;
+2. asks npm what version is published and bumps the **patch** digit past it;
 3. commits that bump to `main` as `Release vX.Y.Z`;
 4. publishes with [npm provenance](https://docs.npmjs.com/generating-provenance-statements);
 5. cuts a `vX.Y.Z` GitHub release with generated notes.
 
-A patch, unless you say otherwise. Put `[minor]` or `[major]` anywhere in a commit message and the bump grows to match — every commit since the last release counts, so it still works when the merge commit buries it. Running the workflow by hand from the Actions tab asks which step to take.
+Merging never moves the major or minor. Those stay where you put them, and there are two ways to put them:
 
-Bumping `packages/gh-runner/package.json` yourself still works and still wins: a manifest ahead of npm is published exactly as written, with no bump commit. That's the way to pick a specific number.
+- **Set the version in `packages/gh-runner/package.json`.** A manifest ahead of npm is published exactly as written, with no bump commit — the way to pick a specific number.
+- **Run the workflow from the Actions tab** and choose `minor` or `major`. Both reset the patch to zero: from `1.0.7`, minor gives `1.1.0` and major gives `2.0.0`.
+
+Either way, merges afterwards resume at the patch: `1.1.0`, then `1.1.1`, `1.1.2`.
+
+Nothing reads commit messages. An earlier version of this workflow looked for a `[major]` keyword, and the very commit that documented the keyword tripped it — `0.1.0` published as `1.0.0`. A release trigger you can't write about is a bad trigger.
 
 Only changes under `packages/gh-runner` (plus `package-lock.json`) trigger a release, so landing work on the landing page or the root README mints nothing. The bump commit is pushed with `GITHUB_TOKEN`, which by design starts no further workflow runs — a release can't set off another release.
 

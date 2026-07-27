@@ -6,10 +6,14 @@ import { CliError } from "../src/errors.js";
 import type { CommandRunner, ExecResult } from "../src/exec.js";
 import { GhClient } from "../src/gh.js";
 import { ghRunner } from "../src/runner.js";
+import type { RunContext } from "../src/runner.js";
+import type { RunnerPlatform } from "../src/platform.js";
 
 const VERSION = "2.334.0";
-const PLATFORM = { os: "linux", arch: "x64" } as const;
+const LINUX = { os: "linux", arch: "x64" } as const;
+const MAC = { os: "osx", arch: "arm64" } as const;
 const TARBALL = `actions-runner-linux-x64-${VERSION}.tar.gz`;
+const MAC_TARBALL = `actions-runner-osx-arm64-${VERSION}.tar.gz`;
 
 interface Recorded {
   command: string;
@@ -29,6 +33,8 @@ function stubRunner(overrides: Record<string, ExecResult> = {}) {
     if (line.includes("--json visibility")) return Promise.resolve(ok("PRIVATE"));
     if (line.includes("registration-token")) return Promise.resolve(ok("REG123"));
     if (line.includes("remove-token")) return Promise.resolve(ok("RM123"));
+    if (line.includes("docker --version")) return Promise.resolve(ok("27.0.0"));
+    if (line.includes("docker info")) return Promise.resolve(ok("27.0.0"));
     return Promise.resolve(ok(""));
   };
   return { runner, calls };
@@ -40,75 +46,64 @@ let cacheDir = "";
 
 beforeEach(async () => {
   cacheDir = await mkdtemp(join(tmpdir(), "gh-runner-test-"));
-  // Pre-seed the cache so the run never reaches the network.
+  // Pre-seed the cache so no run ever reaches the network.
   await writeFile(join(cacheDir, TARBALL), "not-really-a-tarball");
+  await writeFile(join(cacheDir, MAC_TARBALL), "not-really-a-tarball");
 });
 
 afterEach(async () => {
   await rm(cacheDir, { recursive: true, force: true });
 });
 
+const base = (runner: CommandRunner, platform: RunnerPlatform = LINUX): RunContext => ({
+  commandRunner: runner,
+  gh: new GhClient({ runner }),
+  platform,
+  nodePlatform: platform.os === "osx" ? "darwin" : "linux",
+});
+
 describe("ghRunner", () => {
-  it("registers, runs, and reports what it set up", async () => {
+  it("defaults to this machine alone when nothing is asked for", async () => {
     const { runner, calls } = stubRunner();
-    const summary = await ghRunner(
+    const { runners } = await ghRunner(
       { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir, labels: ["gpu"] },
-      {
-        commandRunner: runner,
-        gh: new GhClient({ runner }),
-        platform: PLATFORM,
-        nodePlatform: "linux",
-      },
+      base(runner),
     );
 
-    expect(summary.repo).toBe("octocat/private-thing");
-    expect(summary.ephemeral).toBe(true);
-    expect(summary.labels).toEqual(["gh-runner", "gh-runner-linux", summary.hostLabel, "gpu"]);
-    expect(summary.runnerName).toBe(`${summary.hostLabel}-${process.pid}`);
+    expect(runners).toHaveLength(1);
+    const [only] = runners;
+    expect(only?.mode).toBe("native");
+    expect(only?.platform).toEqual(LINUX);
+    expect(only?.labels).toEqual(["gh-runner", "gh-runner-linux", only?.hostLabel, "gpu"]);
+    expect(only?.ephemeral).toBe(true);
 
     const config = calls.find((c) => c.command.endsWith("config.sh"));
-    expect(config).toBeDefined();
     expect(config?.args).toContain("--ephemeral");
-    expect(config?.args).toContain("--unattended");
-    expect(config?.args.join(" ")).toContain("https://github.com/octocat/private-thing");
     expect(config?.args).toContain("REG123");
-
     expect(calls.some((c) => c.command.endsWith("run.sh"))).toBe(true);
-    expect(calls.some((c) => c.command === "tar")).toBe(true);
+    // Docker is never probed when only the host platform is wanted.
+    expect(calls.some((c) => c.command === "docker")).toBe(false);
   });
 
   it("drops --ephemeral when --keep is set", async () => {
     const { runner, calls } = stubRunner();
-    const summary = await ghRunner(
+    const { runners } = await ghRunner(
       { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir, keep: true },
-      {
-        commandRunner: runner,
-        gh: new GhClient({ runner }),
-        platform: PLATFORM,
-        nodePlatform: "linux",
-      },
+      base(runner),
     );
 
-    expect(summary.ephemeral).toBe(false);
-    const config = calls.find((c) => c.command.endsWith("config.sh"));
-    expect(config?.args).not.toContain("--ephemeral");
+    expect(runners[0]?.ephemeral).toBe(false);
+    expect(calls.find((c) => c.command.endsWith("config.sh"))?.args).not.toContain("--ephemeral");
   });
 
   it("refuses a public repo unless --allow-public is passed", async () => {
     const { runner } = stubRunner({ "--json visibility": ok("PUBLIC") });
-    const context = {
-      commandRunner: runner,
-      gh: new GhClient({ runner }),
-      platform: PLATFORM,
-      nodePlatform: "linux" as const,
-    };
     const options = { repo: "octocat/open-source", runnerVersion: VERSION, cacheDir };
 
-    await expect(ghRunner(options, context)).rejects.toThrow(CliError);
-    await expect(ghRunner(options, context)).rejects.toThrow(/is PUBLIC/);
-
-    await expect(ghRunner({ ...options, allowPublic: true }, context)).resolves.toMatchObject({
-      repo: "octocat/open-source",
+    await expect(ghRunner(options, base(runner))).rejects.toThrow(CliError);
+    await expect(ghRunner(options, base(runner))).rejects.toThrow(/is PUBLIC/);
+    await expect(ghRunner({ ...options, allowPublic: true }, base(runner))).resolves.toMatchObject({
+      runners: [{ repo: "octocat/open-source" }],
     });
   });
 
@@ -117,149 +112,131 @@ describe("ghRunner", () => {
       "config.sh": { code: 1, stdout: "", stderr: "Invalid registration token" },
     });
     await expect(
-      ghRunner(
-        { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
-        {
-          commandRunner: runner,
-          gh: new GhClient({ runner }),
-          platform: PLATFORM,
-          nodePlatform: "linux",
-        },
-      ),
+      ghRunner({ repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir }, base(runner)),
     ).rejects.toThrow(/runner registration failed[\s\S]*Invalid registration token/);
   });
+});
 
-  it("audits the repo's workflows and offers to fix them", async () => {
-    const repoRoot = await mkdtemp(join(tmpdir(), "gh-runner-repo-"));
-    await mkdir(join(repoRoot, ".github", "workflows"), { recursive: true });
-    await writeFile(
-      join(repoRoot, ".github", "workflows", "ci.yml"),
-      ["jobs:", "  build:", "    runs-on: ubuntu-latest"].join("\n"),
-    );
-
-    // `--show-toplevel` answers with the fixture; `ls-remote` succeeding means
-    // the fix stops at "branch already exists" instead of touching a real repo.
-    const { runner } = stubRunner({ "rev-parse --show-toplevel": ok(repoRoot) });
-    const asked: string[] = [];
-    const summary = await ghRunner(
-      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
-      {
-        commandRunner: runner,
-        gh: new GhClient({ runner }),
-        platform: PLATFORM,
-        nodePlatform: "linux",
-        confirm: (question) => {
-          asked.push(question);
-          return Promise.resolve(false);
-        },
-      },
-    );
-
-    expect(summary.workflows?.scanned).toBe(true);
-    expect(summary.workflows?.hosted.map((t) => t.job)).toEqual(["build"]);
-    expect(summary.workflows?.matches).toEqual([]);
-    expect(asked).toHaveLength(1);
-    expect(asked[0]).toMatch(/Update 1 job to runs-on: \[self-hosted, gh-runner\]/);
-
-    await rm(repoRoot, { recursive: true, force: true });
-  });
-
-  it("never asks when a job already targets the runner", async () => {
-    const repoRoot = await mkdtemp(join(tmpdir(), "gh-runner-repo-"));
-    await mkdir(join(repoRoot, ".github", "workflows"), { recursive: true });
-    await writeFile(
-      join(repoRoot, ".github", "workflows", "ci.yml"),
-      ["jobs:", "  build:", "    runs-on: [self-hosted, gh-runner]"].join("\n"),
-    );
-
-    const { runner } = stubRunner({ "rev-parse --show-toplevel": ok(repoRoot) });
-    let asked = 0;
-    const summary = await ghRunner(
-      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
-      {
-        commandRunner: runner,
-        gh: new GhClient({ runner }),
-        platform: PLATFORM,
-        nodePlatform: "linux",
-        confirm: () => {
-          asked += 1;
-          return Promise.resolve(true);
-        },
-      },
-    );
-
-    expect(summary.workflows?.matches.map((t) => t.job)).toEqual(["build"]);
-    expect(asked).toBe(0);
-
-    await rm(repoRoot, { recursive: true, force: true });
-  });
-
-  it("skips the audit entirely with --no-workflow-check", async () => {
+describe("platform selection", () => {
+  it("serves a named platform", async () => {
     const { runner } = stubRunner();
-    const summary = await ghRunner(
+    const { runners } = await ghRunner(
       {
         repo: "octocat/private-thing",
         runnerVersion: VERSION,
         cacheDir,
-        skipWorkflowCheck: true,
+        platforms: ["linux"],
       },
-      {
-        commandRunner: runner,
-        gh: new GhClient({ runner }),
-        platform: PLATFORM,
-        nodePlatform: "linux",
-      },
+      base(runner),
     );
-    expect(summary.workflows).toBeUndefined();
+    expect(runners.map((r) => [r.platform.os, r.mode])).toEqual([["linux", "native"]]);
   });
 
-  it("runs in a Linux container with --docker, whatever the host is", async () => {
+  it("errors when the platform can't exist on this host", async () => {
+    const { runner } = stubRunner();
+    await expect(
+      ghRunner(
+        { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir, platforms: ["windows"] },
+        base(runner, MAC),
+      ),
+    ).rejects.toThrow(/Windows: needs a Windows machine/);
+  });
+
+  it("errors for Linux when Docker isn't reachable", async () => {
+    const { runner } = stubRunner({ "docker info": { code: 1, stdout: "", stderr: "no daemon" } });
+    await expect(
+      ghRunner(
+        { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir, platforms: ["linux"] },
+        base(runner, MAC),
+      ),
+    ).rejects.toThrow(/Linux: .*daemon isn't reachable/);
+  });
+
+  it("runs a native and a containerised runner side by side", async () => {
     const { runner, calls } = stubRunner({ "runners?per_page": ok("") });
-    const summary = await ghRunner(
-      { repo: "octocat/private-thing", cacheDir, docker: true, skipWorkflowCheck: true },
-      {
-        commandRunner: runner,
-        gh: new GhClient({ runner }),
-        // A macOS host still registers a Linux runner.
-        platform: { os: "osx", arch: "arm64" },
-        nodePlatform: "darwin",
-      },
-    );
-
-    expect(summary.platform).toEqual({ os: "linux", arch: "arm64" });
-    expect(summary.labels).toEqual(["gh-runner", "gh-runner-linux", summary.hostLabel]);
-    expect(summary.runnerName).toContain("-docker-");
-
-    const run = calls.find((c) => c.command === "docker" && c.args[0] === "run");
-    expect(run).toBeDefined();
-    expect(run?.args).toContain("--rm");
-    expect(run?.args).toContain("GHR_TOKEN=REG123");
-
-    // Nothing was downloaded or unpacked on the host.
-    expect(calls.some((c) => c.command === "tar")).toBe(false);
-    expect(calls.some((c) => c.command.endsWith("config.sh"))).toBe(false);
-  });
-
-  it("labels the container run by the platform it was told to use", async () => {
-    const { runner } = stubRunner({ "runners?per_page": ok("") });
-    const summary = await ghRunner(
+    const { runners } = await ghRunner(
       {
         repo: "octocat/private-thing",
+        runnerVersion: VERSION,
         cacheDir,
-        docker: true,
-        dockerPlatform: "linux/amd64",
-        skipWorkflowCheck: true,
+        platforms: ["mac", "linux"],
       },
-      {
-        commandRunner: runner,
-        gh: new GhClient({ runner }),
-        platform: { os: "osx", arch: "arm64" },
-        nodePlatform: "darwin",
-      },
+      base(runner, MAC),
     );
-    expect(summary.platform).toEqual({ os: "linux", arch: "x64" });
+
+    expect(runners.map((r) => [r.platform.os, r.mode]).sort()).toEqual([
+      ["linux", "docker"],
+      ["osx", "native"],
+    ]);
+
+    // The macOS one runs natively, the Linux one in a container.
+    expect(calls.some((c) => c.command.endsWith("run.sh"))).toBe(true);
+    expect(calls.some((c) => c.command === "docker" && c.args[0] === "run")).toBe(true);
+
+    // Distinct names, so both can register at once.
+    expect(new Set(runners.map((r) => r.runnerName)).size).toBe(2);
+    expect(runners.find((r) => r.mode === "docker")?.labels).toContain("gh-runner-linux");
+    expect(runners.find((r) => r.mode === "native")?.labels).toContain("gh-runner-mac");
   });
 
+  it("--all takes everything possible and never errors on the rest", async () => {
+    const { runner } = stubRunner({ "runners?per_page": ok("") });
+    const { runners } = await ghRunner(
+      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir, all: true },
+      base(runner, MAC),
+    );
+    // A Mac can serve macOS and, via Docker, Linux — but not Windows.
+    expect(runners.map((r) => r.platform.os).sort()).toEqual(["linux", "osx"]);
+  });
+
+  it("--all on a host with no Docker falls back to the host alone", async () => {
+    const { runner } = stubRunner({ "docker --version": { code: 1, stdout: "", stderr: "" } });
+    const { runners } = await ghRunner(
+      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir, all: true },
+      base(runner, MAC),
+    );
+    expect(runners.map((r) => r.platform.os)).toEqual(["osx"]);
+  });
+
+  it("asks interactively when nothing is specified", async () => {
+    const { runner } = stubRunner({ "runners?per_page": ok("") });
+    let offered: Array<{ label: string; disabled: boolean; selected: boolean }> = [];
+
+    const { runners } = await ghRunner(
+      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
+      {
+        ...base(runner, MAC),
+        selectPlatforms: (choices) => {
+          offered = choices.map((c) => ({
+            label: c.label,
+            disabled: c.disabled,
+            selected: c.selected,
+          }));
+          return Promise.resolve(["linux"]);
+        },
+      },
+    );
+
+    expect(offered).toEqual([
+      { label: "macOS", disabled: false, selected: true },
+      { label: "Linux", disabled: false, selected: false },
+      { label: "Windows", disabled: true, selected: false },
+    ]);
+    expect(runners.map((r) => r.platform.os)).toEqual(["linux"]);
+  });
+
+  it("treats a cancelled menu as an interrupt", async () => {
+    const { runner } = stubRunner();
+    await expect(
+      ghRunner(
+        { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
+        { ...base(runner), selectPlatforms: () => Promise.resolve(null) },
+      ),
+    ).rejects.toThrow(/interrupted/);
+  });
+});
+
+describe("containerised runners", () => {
   it("removes the container and deregisters even when the run fails", async () => {
     const { runner, calls } = stubRunner({
       "docker run": { code: 1, stdout: "", stderr: "boom" },
@@ -267,34 +244,110 @@ describe("ghRunner", () => {
     });
 
     await ghRunner(
-      { repo: "octocat/private-thing", cacheDir, docker: true, skipWorkflowCheck: true },
       {
-        commandRunner: runner,
-        gh: new GhClient({ runner }),
-        platform: { os: "linux", arch: "x64" },
-        nodePlatform: "linux",
+        repo: "octocat/private-thing",
+        runnerVersion: VERSION,
+        cacheDir,
+        platforms: ["linux"],
+        dockerImage: "my/runner:1",
       },
+      base(runner),
     );
 
     expect(calls.some((c) => c.command === "docker" && c.args[0] === "rm")).toBe(true);
     expect(calls.some((c) => c.args.join(" ").includes("-X DELETE"))).toBe(true);
   });
 
-  it("refuses --docker when the daemon isn't reachable", async () => {
-    const { runner } = stubRunner({ "docker info": { code: 1, stdout: "", stderr: "no daemon" } });
-    await expect(
-      ghRunner(
-        { repo: "octocat/private-thing", cacheDir, docker: true, skipWorkflowCheck: true },
-        {
-          commandRunner: runner,
-          gh: new GhClient({ runner }),
-          platform: { os: "linux", arch: "x64" },
-          nodePlatform: "linux",
+  it("labels the container by the platform it was told to use", async () => {
+    const { runner } = stubRunner({ "runners?per_page": ok("") });
+    const { runners } = await ghRunner(
+      {
+        repo: "octocat/private-thing",
+        runnerVersion: VERSION,
+        cacheDir,
+        platforms: ["linux"],
+        dockerPlatform: "linux/amd64",
+      },
+      base(runner, MAC),
+    );
+    expect(runners[0]?.platform).toEqual({ os: "linux", arch: "x64" });
+  });
+});
+
+describe("the workflow audit", () => {
+  const withWorkflow = async (body: string) => {
+    const repoRoot = await mkdtemp(join(tmpdir(), "gh-runner-repo-"));
+    await mkdir(join(repoRoot, ".github", "workflows"), { recursive: true });
+    await writeFile(join(repoRoot, ".github", "workflows", "ci.yml"), body);
+    return repoRoot;
+  };
+
+  it("audits against every runner's labels and offers to fix", async () => {
+    const repoRoot = await withWorkflow(
+      ["jobs:", "  build:", "    runs-on: ubuntu-latest"].join("\n"),
+    );
+    const { runner } = stubRunner({ "rev-parse --show-toplevel": ok(repoRoot) });
+    const asked: string[] = [];
+
+    const { workflows } = await ghRunner(
+      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
+      {
+        ...base(runner),
+        confirm: (question) => {
+          asked.push(question);
+          return Promise.resolve(false);
         },
-      ),
-    ).rejects.toThrow(/daemon isn't reachable/);
+      },
+    );
+
+    expect(workflows?.hosted.map((t) => t.job)).toEqual(["build"]);
+    expect(asked[0]).toMatch(/Update 1 job to runs-on: \[self-hosted, gh-runner\]/);
+    await rm(repoRoot, { recursive: true, force: true });
   });
 
+  it("counts a job as matching when any one runner can take it", async () => {
+    const repoRoot = await withWorkflow(
+      ["jobs:", "  only-linux:", "    runs-on: [self-hosted, gh-runner-linux]"].join("\n"),
+    );
+    const { runner } = stubRunner({
+      "rev-parse --show-toplevel": ok(repoRoot),
+      "runners?per_page": ok(""),
+    });
+    let asked = 0;
+
+    // A Mac serving both macOS and Linux: the Linux-only job matches.
+    const { workflows } = await ghRunner(
+      {
+        repo: "octocat/private-thing",
+        runnerVersion: VERSION,
+        cacheDir,
+        platforms: ["mac", "linux"],
+      },
+      {
+        ...base(runner, MAC),
+        confirm: () => {
+          asked += 1;
+          return Promise.resolve(true);
+        },
+      },
+    );
+
+    expect(workflows?.matches.map((t) => t.job)).toEqual(["only-linux"]);
+    expect(asked).toBe(0);
+    await rm(repoRoot, { recursive: true, force: true });
+  });
+
+  it("skips the audit entirely with --no-workflow-check", async () => {
+    const { runner } = stubRunner();
+    const { workflows } = await ghRunner(
+      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir, skipWorkflowCheck: true },
+      base(runner),
+    );
+    expect(workflows).toBeUndefined();
+  });
+});
+
+describe("interruption", () => {
   it("stops before touching the network when already aborted", async () => {
     const { runner, calls } = stubRunner();
     const abort = new AbortController();
@@ -303,13 +356,7 @@ describe("ghRunner", () => {
     await expect(
       ghRunner(
         { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
-        {
-          commandRunner: runner,
-          gh: new GhClient({ runner }),
-          platform: PLATFORM,
-          nodePlatform: "linux",
-          signal: abort.signal,
-        },
+        { ...base(runner), signal: abort.signal },
       ),
     ).rejects.toThrow();
 

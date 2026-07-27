@@ -26,10 +26,55 @@ npm install -g gh-runner
 ## Use it
 
 ```bash
-gh-runner                       # detect the repo from cwd, run one job, exit
+gh-runner                       # pick platforms from a menu, run one job, exit
+gh-runner linux                 # or just name them
+gh-runner mac linux             # one runner each, in parallel
+gh-runner --all                 # every platform this machine can serve
 gh-runner --keep                # stay online for many jobs until Ctrl+C
 gh-runner --labels gpu,cuda-12  # extra labels on top of the defaults
 gh-runner --repo owner/name     # target a repo other than cwd
+```
+
+## Choosing platforms
+
+With no platform named and a terminal to draw on, it asks:
+
+```
+? Which platforms should this machine serve?
+  ↑↓ move · space toggle · a all · enter confirm · ctrl-c cancel
+❯ ◉ macOS    native — this machine
+  ◯ Linux    in a container, via Docker
+  ✗ Windows  needs a Windows machine — Windows containers only run on Windows
+```
+
+Your own OS is pre-ticked, so the common case is one keypress. Anything this machine can't be is shown with the reason and can't be selected.
+
+To skip the menu, name the platforms — as bare words or with `--os`:
+
+```bash
+gh-runner mac              # mac | macos | darwin | osx
+gh-runner linux            # linux | ubuntu
+gh-runner windows          # windows | win
+gh-runner mac linux        # several
+gh-runner --os mac,linux   # same thing
+gh-runner --all            # everything possible here, no menu, no error
+```
+
+**Asking for a platform this machine can't be is an error**, not a warning:
+
+```
+$ gh-runner windows        # on a Mac
+error: this machine can't run that runner
+       Windows: needs a Windows machine — Windows containers only run on Windows
+```
+
+`--all` never errors — it takes what's possible and ignores the rest. With no terminal to prompt on and no platform named (a script, a cron job), it serves this machine's own OS.
+
+Several platforms means several runners, registered and running in parallel, each with its own labels and its own cleanup. Their output is prefixed so you can tell them apart:
+
+```
+[macOS] ==> Runner is live. Waiting for a job...
+[Linux] ==> Starting ghcr.io/actions/actions-runner:latest...
 ```
 
 Every runner registers under the same set of labels, so `runs-on` is a stable contract in your YAML no matter whose machine is standing in:
@@ -56,26 +101,27 @@ jobs:
 
 GitHub adds `self-hosted`, `macOS`/`Linux`/`Windows`, and `X64`/`ARM64` on top of those, so you can pin by architecture too.
 
-### Docker: one extra OS, not all of them
+### Where Linux comes from
 
-`--docker` runs the runner inside a Linux container instead of natively:
+Asking for `linux` on a Mac or a Windows box runs the runner in a Docker container. It registers exactly the same labels a native Linux machine would (`gh-runner`, `gh-runner-linux`, `Linux`, `X64`/`ARM64`), so from GitHub's side it _is_ a Linux runner. Nothing is downloaded or unpacked on the host — GitHub's runner image already contains the runner.
 
 ```bash
-gh-runner --docker                          # a Linux runner, on any host
-gh-runner --docker --docker-platform linux/amd64   # x64 under emulation on Apple silicon
+gh-runner linux                                  # a container on a Mac, native on Linux
+gh-runner linux --docker-platform linux/amd64    # x64 under emulation on Apple silicon
+gh-runner linux --docker-image my/runner:1       # your own image
 ```
 
-It registers exactly the same labels a native Linux machine would (`gh-runner`, `gh-runner-linux`, `Linux`, `X64`/`ARM64`), so from GitHub's side it _is_ a Linux runner. Nothing is downloaded or unpacked on the host — GitHub's runner image already contains the runner.
+On a Linux host `linux` runs natively; passing `--docker-image` or `--docker-platform` puts it in a container instead, which is also how you sandbox a job away from your own filesystem.
 
 What that buys you, honestly:
 
-| Your machine | Native `gh-runner`  | Plus `gh-runner --docker`    | Still can't provide |
-| ------------ | ------------------- | ---------------------------- | ------------------- |
-| macOS        | `gh-runner-mac`     | `gh-runner-linux`            | Windows             |
-| Linux        | `gh-runner-linux`   | `gh-runner-linux`, sandboxed | macOS, Windows      |
-| Windows      | `gh-runner-windows` | `gh-runner-linux`            | macOS               |
+| Your machine | `gh-runner` (its own OS) | `gh-runner linux`             | Can never provide |
+| ------------ | ------------------------ | ----------------------------- | ----------------- |
+| macOS        | `gh-runner-mac`          | `gh-runner-linux` (container) | Windows           |
+| Linux        | `gh-runner-linux`        | native, or sandboxed          | macOS, Windows    |
+| Windows      | `gh-runner-windows`      | `gh-runner-linux` (container) | macOS             |
 
-**Docker gets you Linux from anywhere. It cannot get you macOS or Windows.**
+**Docker gets you Linux from anywhere. It cannot get you macOS or Windows** — which is why asking for those on the wrong machine is an error rather than a silent fallback.
 
 - **macOS containers don't exist.** There is no macOS container runtime — the kernel has no equivalent of namespaces for this, and Apple's licence only permits macOS _virtual machines_, on Apple hardware. Only a real Mac can serve `gh-runner-mac`. (Apple's own `container` tool on macOS 15+ runs _Linux_ containers, not macOS ones.)
 - **Windows containers only run on Windows hosts.** Containers share the host kernel, so a Linux or macOS box can't run them at any price. Even on Windows they're multi-gigabyte and there's no supported runner image, so `gh-runner-windows` means a real Windows machine.
@@ -87,11 +133,11 @@ Two things to know about container mode:
 - **No host mounts, no Docker socket.** The job can't see your filesystem, which is the main reason to use it — but it also means jobs that run `docker build` won't work, since mounting the socket would hand the container root on your machine. Run those natively.
 - **The first run pulls a ~1 GB image.** After that it's cached by Docker.
 
-### One machine, one runner
+### One machine, one OS (plus Linux)
 
-`gh-runner` registers **the machine it's running on** — nothing more. On an Apple silicon MacBook you get exactly one runner: `self-hosted, macOS, ARM64, gh-runner, gh-runner-mac, <hostname>`. It does not spin up Linux or Windows runners for you; there's no VM or container involved.
+`gh-runner` serves platforms **this machine can actually be**. On an Apple silicon MacBook that's macOS natively and Linux in a container — never Windows. To cover Windows you need a Windows machine; that's a hardware fact, not a missing feature.
 
-To cover several operating systems, run it on several machines — one `npx gh-runner` per box, or `--docker` for a Linux one. That's what the per-OS labels are for: with a Mac and a Linux box both online, `[self-hosted, gh-runner]` goes to whichever is free, while `[self-hosted, gh-runner-mac]` only ever goes to the Mac.
+The per-OS labels are what make several machines interchangeable: with a Mac and a Windows box both online, `[self-hosted, gh-runner]` goes to whichever is free, while `[self-hosted, gh-runner-mac]` only ever goes to the Mac.
 
 The startup audit knows the difference. Run `gh-runner` on your Mac against a repo whose jobs ask for `gh-runner-linux` and it says so plainly:
 
@@ -150,8 +196,9 @@ If the branch already exists on the remote, it links the open PR instead of stac
 | `--repo OWNER/NAME`      | Target a specific repo instead of detecting from cwd            |
 | `--name NAME`            | Runner name to register (default: `<host>-<pid>`)               |
 | `--allow-public`         | Permit registration on a public repo (**dangerous**, see below) |
-| `--docker`               | Run the runner in a Linux container instead of natively         |
-| `--docker-image IMAGE`   | Image to use (default `ghcr.io/actions/actions-runner:latest`)  |
+| `--all`                  | Serve every platform this machine can                           |
+| `--os a,b`               | Platforms to serve (same as positional arguments)               |
+| `--docker-image IMAGE`   | Image for containerised runners (default GitHub's runner image) |
 | `--docker-platform P`    | Container platform, e.g. `linux/amd64`                          |
 | `--runner-version X.Y.Z` | Pin the runner version (default: latest release)                |
 | `--cache-dir PATH`       | Where to cache runner tarballs                                  |
@@ -170,7 +217,7 @@ If the branch already exists on the remote, it links the open PR instead of stac
 Everything else is designed to leave nothing behind:
 
 - The runner is **ephemeral** by default — GitHub retires it after one job.
-- `--docker` isolates the job from your filesystem entirely: no volumes, no Docker socket, nothing mounted.
+- Containerised runners isolate the job from your filesystem entirely: no volumes, no Docker socket, nothing mounted.
 - The working directory is a fresh `mktemp -d`, removed on exit.
 - Deregistration runs on normal exit, on error, and on Ctrl+C.
 - The workflow fix runs in a disposable worktree and never writes to your checkout.
@@ -182,16 +229,18 @@ Everything else is designed to leave nothing behind:
 ```ts
 import { ghRunner, createLogger } from "gh-runner";
 
-const summary = await ghRunner(
-  { repo: "octocat/hello-world", labels: ["gpu"], keep: false },
+const { runners, workflows } = await ghRunner(
+  { repo: "octocat/hello-world", platforms: ["mac", "linux"], labels: ["gpu"] },
   { logger: createLogger(), signal: AbortSignal.timeout(30 * 60_000) },
 );
 
-console.log(summary.runnerName, summary.labels);
-console.log(summary.workflows?.matches); // jobs that will land here
+for (const runner of runners) {
+  console.log(runner.runnerName, runner.mode, runner.labels);
+}
+console.log(workflows?.matches); // jobs that will land here
 ```
 
-`ghRunner` resolves once the runner has finished and been deregistered. Aborting the signal shuts it down and cleans up. It never prompts unless you pass a `confirm` in the context — `createConfirm()` gives you the terminal one.
+`ghRunner` resolves once every runner has finished and been deregistered. Aborting the signal shuts them down and cleans up. It never prompts unless you pass `confirm` / `selectPlatforms` in the context — `createConfirm()` and `terminalPlatformPicker` are the terminal implementations.
 
 The workflow pieces are exported on their own too: `inspectWorkflows`, `parseRunsOn`, `classifyTarget`, `applyRunsOnFix`, and `proposeWorkflowFix`.
 

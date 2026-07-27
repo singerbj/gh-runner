@@ -28,6 +28,7 @@
       <div class="wrap header-inner">
         <span class="wordmark"><span class="prompt">$</span> gh-runner</span>
         <nav aria-label="Primary">
+          <a href="#platforms">Platforms</a>
           <a href="#how">How it works</a>
           <a href="#check">Workflow check</a>
           <a href="#options">Options</a>
@@ -83,6 +84,12 @@
           <div class="terminal-bar"><span></span><span></span><span></span></div>
           <pre class="terminal-body"><code><span class="c-dim">~/code/my-repo</span>
 <span class="c-prompt">$</span> npx gh-runner
+<span class="c-bold">?</span> Which platforms should this machine serve?
+  <span class="c-dim">↑↓ move · space toggle · a all · enter confirm · ctrl-c cancel</span>
+<span class="c-green">❯</span> <span class="c-green">◉</span> macOS    <span class="c-dim">native — this machine</span>
+  <span class="c-green">◉</span> Linux    <span class="c-dim">in a container, via Docker</span>
+  <span class="c-dim">✗ Windows  needs a Windows machine — Windows containers only run on Windows</span>
+
 <span class="c-bold">==&gt;</span> Checking .github/workflows for a matching runs-on...
     <span class="c-green">✓</span> .github/workflows/bench.yml <span class="c-dim">→</span> <span class="c-bold">bench</span> will run here
     <span class="c-dim">!</span> .github/workflows/ci.yml:9 <span class="c-dim">→</span> <span class="c-bold">gpu</span> wants cuda, which this runner won't have
@@ -92,21 +99,22 @@
 <span class="c-bold">==&gt;</span> Requesting a registration token for <span class="c-bold">octocat/private-thing</span>...
 <span class="c-bold">==&gt;</span> Registering...
 
-  <span class="c-green">Runner is live.</span>  Target it with:
+  <span class="c-green">Bringing up 2 runners.</span>  Target them with:
 
-      <span class="c-bold">runs-on: [self-hosted, gh-runner]</span>      <span class="c-dim">any registered machine</span>
-      <span class="c-bold">runs-on: [self-hosted, gh-runner-mac]</span>  <span class="c-dim">macOS only</span>
+      <span class="c-bold">runs-on: [self-hosted, gh-runner]</span>        <span class="c-dim">any registered machine</span>
+      <span class="c-bold">runs-on: [self-hosted, gh-runner-mac]</span>    <span class="c-dim">macOS only (native)</span>
+      <span class="c-bold">runs-on: [self-hosted, gh-runner-linux]</span>  <span class="c-dim">Linux only (container)</span>
 
   Repo:   octocat/private-thing
-  Labels: self-hosted, macOS, ARM64, gh-runner, gh-runner-mac, my-macbook-pro
-  Mode:   ephemeral — exits after one job
+  Mode:   ephemeral — each exits after one job
 
   <span class="c-dim">Ctrl+C to stop and deregister.</span>
 
-<span class="c-dim">√ Connected to GitHub. Listening for Jobs...</span>
-<span class="c-dim">Running job: build</span>
-<span class="c-green">√ build</span> completed with result: Succeeded
-<span class="c-bold">==&gt;</span> Deregistering runner...
+<span class="c-dim">[macOS]</span> <span class="c-bold">==&gt;</span> <span class="c-green">Runner is live.</span> Waiting for a job...
+<span class="c-dim">[Linux]</span> <span class="c-bold">==&gt;</span> Starting ghcr.io/actions/actions-runner:latest...
+<span class="c-dim">[Linux] √ Connected to GitHub. Listening for Jobs...</span>
+<span class="c-dim">[macOS] Running job: build</span>
+<span class="c-dim">[macOS]</span> <span class="c-green">√ build</span> completed with result: Succeeded
 <span class="c-bold">==&gt;</span> <span class="c-green">Done.</span> Nothing left registered, nothing left on disk.</code></pre>
         </div>
       </section>
@@ -154,6 +162,56 @@
             <p>
               Nothing is installed as a service. Nothing survives the run. There's no runner sitting
               idle in your repo settings a month from now.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="wrap" id="platforms" aria-labelledby="platforms-heading">
+        <h2 id="platforms-heading">Pick your platforms, or just name them</h2>
+        <p class="section-lede">
+          Run it with no arguments and it asks. Your own OS comes pre-ticked, so the common case is
+          one keypress; anything this machine can't be is shown with the reason and can't be
+          selected.
+        </p>
+        <pre
+          class="code-block"
+        ><code><span class="c-prompt">$</span> gh-runner            <span class="c-dim"># pick from a menu</span>
+<span class="c-prompt">$</span> gh-runner linux      <span class="c-dim"># or name them</span>
+<span class="c-prompt">$</span> gh-runner mac linux  <span class="c-dim"># one runner each, in parallel</span>
+<span class="c-prompt">$</span> gh-runner --all      <span class="c-dim"># everything this machine can serve</span>
+<span class="c-prompt">$</span> gh-runner --os mac,linux</code></pre>
+
+        <div class="grid check-grid">
+          <article class="card">
+            <h3>Impossible is an error</h3>
+            <p>
+              Ask a Mac for a Windows runner and the command stops, with the reason — rather than
+              quietly registering something that can never run those jobs.
+            </p>
+            <pre class="code-block small"><code><span class="c-prompt">$</span> gh-runner windows
+<span class="c-red">error:</span> this machine can't run that runner
+       Windows: needs a Windows machine</code></pre>
+          </article>
+          <article class="card">
+            <h3><code>--all</code> never errors</h3>
+            <p>
+              It takes what's possible on this host and ignores the rest — macOS and Linux on a Mac,
+              Linux alone on a Linux box, Windows and Linux on a PC.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Several runners, one command</h3>
+            <p>
+              Each platform gets its own runner, its own labels, and its own cleanup, all running in
+              parallel. Their output is prefixed so you can tell them apart.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Scriptable</h3>
+            <p>
+              With no terminal to prompt on and no platform named, it serves this machine's own OS —
+              so a cron job or a CI script never blocks waiting for an answer.
             </p>
           </article>
         </div>
@@ -271,10 +329,10 @@
           </table>
         </div>
 
-        <h3 class="subhead">Docker gets you Linux from anywhere</h3>
+        <h3 class="subhead">Where Linux comes from</h3>
         <p class="section-lede">
-          <code>gh-runner --docker</code> runs the runner inside a Linux container instead of
-          natively, registering exactly the labels a real Linux machine would. Nothing is unpacked
+          Ask for <code>linux</code> on a Mac or a Windows box and the runner goes into a Docker
+          container, registering exactly the labels a real Linux machine would. Nothing is unpacked
           on your host, and the job can't see your filesystem — no volumes, no Docker socket.
         </p>
         <div class="table-scroll">
@@ -282,8 +340,8 @@
             <thead>
               <tr>
                 <th scope="col">Your machine</th>
-                <th scope="col">Native</th>
-                <th scope="col">Plus <code>--docker</code></th>
+                <th scope="col">Its own OS</th>
+                <th scope="col"><code>gh-runner linux</code></th>
                 <th scope="col">Still can't provide</th>
               </tr>
             </thead>
@@ -297,7 +355,7 @@
               <tr>
                 <td>Linux</td>
                 <td><code>gh-runner-linux</code></td>
-                <td><code>gh-runner-linux</code>, sandboxed</td>
+                <td>native, or sandboxed</td>
                 <td>macOS, Windows</td>
               </tr>
               <tr>
@@ -317,13 +375,12 @@
           covering Linux from either, so you don't need a third machine.
         </p>
 
-        <h3 class="subhead">One machine, one runner</h3>
+        <h3 class="subhead">One machine, one OS (plus Linux)</h3>
         <p class="section-lede">
-          <code>gh-runner</code> registers the machine it's running on — nothing more. On an Apple
-          silicon MacBook that's exactly one runner:
-          <code>self-hosted, macOS, ARM64, gh-runner, gh-runner-mac</code>. No VMs, no containers,
-          and no Linux or Windows runner conjured out of thin air. To cover several operating
-          systems, run it on several machines — that's what the per-OS labels are for.
+          <code>gh-runner</code> serves platforms this machine can actually be. On an Apple silicon
+          MacBook that's macOS natively and Linux in a container — never Windows. Asking for Windows
+          there is an error, not a silent fallback. To cover it you need a Windows machine; that's a
+          hardware fact, not a missing feature.
         </p>
       </section>
 
@@ -418,12 +475,16 @@ Update 3 jobs to runs-on: [self-hosted, gh-runner] and open a pull request? <spa
                 <td>Permit registration on a public repo — see below</td>
               </tr>
               <tr>
-                <td><code>--docker</code></td>
-                <td>Run the runner in a Linux container instead of natively</td>
+                <td><code>--all</code></td>
+                <td>Serve every platform this machine can</td>
+              </tr>
+              <tr>
+                <td><code>--os a,b</code></td>
+                <td>Platforms to serve (same as positional arguments)</td>
               </tr>
               <tr>
                 <td><code>--docker-image IMAGE</code></td>
-                <td>Image to use (default <code>ghcr.io/actions/actions-runner:latest</code>)</td>
+                <td>Image for containerised runners (default GitHub's runner image)</td>
               </tr>
               <tr>
                 <td><code>--docker-platform P</code></td>

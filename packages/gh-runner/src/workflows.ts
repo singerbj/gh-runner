@@ -180,29 +180,34 @@ export function parseRunsOn(source: string, file: string): RunsOnTarget[] {
 }
 
 /**
- * GitHub matches a job to a runner when the runner carries *every* label in
+ * GitHub matches a job to a runner when that runner carries *every* label in
  * `runs-on`, case-insensitively.
+ *
+ * With several runners registered, a job only has to match one of them, so the
+ * verdict is the best across all the label sets — and the reported "missing"
+ * is the shortest gap, which is the most useful thing to tell someone.
  */
 export function classifyTarget(
   target: RunsOnTarget,
-  runnerLabels: readonly string[],
+  runnerLabelSets: ReadonlyArray<readonly string[]>,
 ): TargetVerdict {
-  if (target.unresolved !== undefined) {
-    return { kind: "unknown", target };
-  }
-  if (target.labels.length === 0) {
+  if (target.unresolved !== undefined || target.labels.length === 0) {
     return { kind: "unknown", target };
   }
 
-  const have = new Set(runnerLabels.map((label) => label.toLowerCase()));
   if (!target.labels.some((label) => label.toLowerCase() === "self-hosted")) {
     return { kind: "hosted", target };
   }
 
-  const missing = target.labels.filter((label) => !have.has(label.toLowerCase()));
-  return missing.length === 0
-    ? { kind: "match", target }
-    : { kind: "missing-labels", target, missing };
+  let best: string[] | undefined;
+  for (const labels of runnerLabelSets) {
+    const have = new Set(labels.map((label) => label.toLowerCase()));
+    const missing = target.labels.filter((label) => !have.has(label.toLowerCase()));
+    if (missing.length === 0) return { kind: "match", target };
+    if (!best || missing.length < best.length) best = missing;
+  }
+
+  return { kind: "missing-labels", target, missing: best ?? target.labels };
 }
 
 /** Lists `.github/workflows/*.y{a,}ml` under a repo root, or null if there are none. */
@@ -228,7 +233,7 @@ export async function listWorkflowFiles(repoRoot: string): Promise<string[] | nu
  */
 export async function inspectWorkflows(
   repoRoot: string,
-  runnerLabels: readonly string[],
+  runnerLabelSets: ReadonlyArray<readonly string[]>,
 ): Promise<WorkflowReport> {
   const files = await listWorkflowFiles(repoRoot);
   if (files === null) {
@@ -263,7 +268,7 @@ export async function inspectWorkflows(
       continue;
     }
     for (const target of targets) {
-      verdicts.push(classifyTarget(target, runnerLabels));
+      verdicts.push(classifyTarget(target, runnerLabelSets));
     }
   }
 

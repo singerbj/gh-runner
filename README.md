@@ -4,8 +4,12 @@ Monorepo for **[`gh-runner`](https://www.npmjs.com/package/gh-runner)** — a CL
 
 ```bash
 cd ~/code/my-repo
-npx gh-runner
+npx gh-runner              # pick platforms from a menu
+npx gh-runner mac linux    # or name them — one runner each, in parallel
+npx gh-runner --all        # everything this machine can serve
 ```
+
+Linux can come from a container, so any machine can serve it; macOS and Windows have to be native, so asking a Mac for a Windows runner is an error rather than a silent no-op.
 
 It also audits `.github/workflows` first, so you find out that nothing targets `runs-on: [self-hosted, gh-runner]` _before_ you sit waiting for a job that never arrives — and it offers to open a PR that fixes the YAML, prepared in a throwaway git worktree so your working tree is never touched.
 

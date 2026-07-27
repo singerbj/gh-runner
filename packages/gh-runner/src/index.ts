@@ -1,5 +1,16 @@
-export { ghRunner, workflowsNeedFix } from "./runner.js";
-export type { RunContext, RunSummary } from "./runner.js";
+export { ghRunner, workflowsNeedFix, terminalPlatformPicker } from "./runner.js";
+export type { RunContext, RunSummary, RunResult } from "./runner.js";
+export {
+  planOptions,
+  parseTargetName,
+  parseTargetNames,
+  resolveTargets,
+  availableTargets,
+  TARGET_ORDER,
+} from "./targets.js";
+export type { PlatformOption, ResolvedTarget, TargetMode, RequestedTargets } from "./targets.js";
+export { promptMultiSelect, initialState, reduce, renderLines, selected } from "./menu.js";
+export type { MenuChoice, MenuState, MenuKey } from "./menu.js";
 export { parseArgs, parseLabels, emptyOptions, USAGE } from "./options.js";
 export type { RunnerOptions, ParsedArgs } from "./options.js";
 export {

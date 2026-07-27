@@ -7,7 +7,7 @@ import { CliError, InterruptedError } from "./errors.js";
 import { createLogger } from "./logger.js";
 import { USAGE, parseArgs } from "./options.js";
 import { createConfirm } from "./prompt.js";
-import { ghRunner } from "./runner.js";
+import { ghRunner, terminalPlatformPicker } from "./runner.js";
 
 function readVersion(): string {
   try {
@@ -67,6 +67,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     await ghRunner(parsed.options, {
       logger,
       confirm: createConfirm(),
+      selectPlatforms: terminalPlatformPicker,
       signal: abort.signal,
       onRunnerSpawn: (spawned) => {
         child = spawned;

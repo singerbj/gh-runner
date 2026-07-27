@@ -472,6 +472,16 @@ td code,
   color: #c9d1d9;
 }
 
+.code-block.small {
+  font-size: 0.78rem;
+  padding: 0.8rem 1rem;
+  margin-top: 0.85rem;
+}
+
+.c-red {
+  color: #f85149;
+}
+
 .table-scroll {
   overflow-x: auto;
   border: 1px solid var(--border-soft);

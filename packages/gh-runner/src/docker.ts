@@ -109,9 +109,10 @@ export async function runInDocker(
   runner: CommandRunner,
   options: DockerRunOptions,
   onSpawn?: SpawnHook,
+  prefix?: string,
 ): Promise<number> {
   const result = await runner("docker", dockerRunArgs(options), {
-    inherit: true,
+    ...(prefix ? { prefix } : { inherit: true }),
     ...(onSpawn ? { onSpawn } : {}),
   });
   return result.code;

@@ -13,6 +13,11 @@ export interface ExecOptions {
   input?: string;
   signal?: AbortSignal;
   onSpawn?: SpawnHook;
+  /**
+   * Echo the child's output line by line behind this prefix. Used when several
+   * runners share one terminal — `inherit` would interleave them mid-line.
+   */
+  prefix?: string;
 }
 
 export interface ExecResult {
@@ -34,9 +39,10 @@ export type CommandRunner = (
 
 export const execCommand: CommandRunner = (command, args, options = {}) =>
   new Promise<ExecResult>((resolve, reject) => {
-    const stdio: StdioOptions = options.inherit
-      ? ["inherit", "inherit", "inherit"]
-      : [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"];
+    const stdio: StdioOptions =
+      options.inherit && options.prefix === undefined
+        ? ["inherit", "inherit", "inherit"]
+        : [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"];
 
     const child = spawn(command, [...args], {
       cwd: options.cwd,
@@ -51,11 +57,34 @@ export const execCommand: CommandRunner = (command, args, options = {}) =>
 
     let stdout = "";
     let stderr = "";
+
+    // Buffers partial lines so a prefix only ever lands at a real line start.
+    const echo = (prefix: string, sink: NodeJS.WritableStream) => {
+      let pending = "";
+      return {
+        push(chunk: string) {
+          pending += chunk;
+          const lines = pending.split("\n");
+          pending = lines.pop() ?? "";
+          for (const line of lines) sink.write(`${prefix}${line}\n`);
+        },
+        flush() {
+          if (pending) sink.write(`${prefix}${pending}\n`);
+          pending = "";
+        },
+      };
+    };
+
+    const outEcho = options.prefix ? echo(options.prefix, process.stdout) : undefined;
+    const errEcho = options.prefix ? echo(options.prefix, process.stderr) : undefined;
+
     child.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
       stdout += chunk;
+      outEcho?.push(chunk);
     });
     child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
       stderr += chunk;
+      errEcho?.push(chunk);
     });
 
     if (options.input !== undefined && child.stdin) {
@@ -64,6 +93,8 @@ export const execCommand: CommandRunner = (command, args, options = {}) =>
 
     child.on("error", reject);
     child.on("close", (code, signal) => {
+      outEcho?.flush();
+      errEcho?.flush();
       // A child killed by a signal reports code === null; surface it as a
       // conventional 128+n so callers can still branch on a number.
       const exitCode = code ?? (signal ? 128 : 1);

@@ -82,7 +82,7 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
 
     // Re-scan inside the worktree: the user's working copy may be ahead of, or
     // behind, the branch the PR is actually built on.
-    const report = await inspectWorkflows(worktree, [label]);
+    const report = await inspectWorkflows(worktree, [[label]]);
     const wanted = options.jobs?.length
       ? report.hosted.filter((target) => options.jobs?.includes(target.job))
       : report.hosted;

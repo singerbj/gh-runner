@@ -174,15 +174,17 @@ describe("classifyTarget", () => {
   });
 
   it("matches when the runner carries every requested label", () => {
-    expect(classifyTarget(target(["self-hosted", "gh-runner"]), RUNNER_LABELS).kind).toBe("match");
-    // GitHub label matching is case-insensitive.
-    expect(classifyTarget(target(["self-hosted", "linux", "GH-RUNNER"]), RUNNER_LABELS).kind).toBe(
+    expect(classifyTarget(target(["self-hosted", "gh-runner"]), [RUNNER_LABELS]).kind).toBe(
       "match",
     );
+    // GitHub label matching is case-insensitive.
+    expect(
+      classifyTarget(target(["self-hosted", "linux", "GH-RUNNER"]), [RUNNER_LABELS]).kind,
+    ).toBe("match");
   });
 
   it("reports exactly which labels are missing", () => {
-    const verdict = classifyTarget(target(["self-hosted", "gpu", "cuda"]), RUNNER_LABELS);
+    const verdict = classifyTarget(target(["self-hosted", "gpu", "cuda"]), [RUNNER_LABELS]);
     expect(verdict.kind).toBe("missing-labels");
     if (verdict.kind === "missing-labels") {
       expect(verdict.missing).toEqual(["gpu", "cuda"]);
@@ -190,7 +192,7 @@ describe("classifyTarget", () => {
   });
 
   it("treats an OS label for another OS as a miss", () => {
-    const verdict = classifyTarget(target(["self-hosted", "gh-runner-mac"]), RUNNER_LABELS);
+    const verdict = classifyTarget(target(["self-hosted", "gh-runner-mac"]), [RUNNER_LABELS]);
     expect(verdict.kind).toBe("missing-labels");
     if (verdict.kind === "missing-labels") {
       expect(verdict.missing).toEqual(["gh-runner-mac"]);
@@ -198,7 +200,7 @@ describe("classifyTarget", () => {
   });
 
   it("treats anything without self-hosted as GitHub-hosted", () => {
-    expect(classifyTarget(target(["ubuntu-latest"]), RUNNER_LABELS).kind).toBe("hosted");
+    expect(classifyTarget(target(["ubuntu-latest"]), [RUNNER_LABELS]).kind).toBe("hosted");
   });
 });
 
@@ -310,7 +312,7 @@ describe("inspectWorkflows", () => {
   };
 
   it("reports no scan when the repo has no workflows", async () => {
-    const report = await inspectWorkflows(root, RUNNER_LABELS);
+    const report = await inspectWorkflows(root, [RUNNER_LABELS]);
     expect(report.scanned).toBe(false);
     expect(report.workflowCount).toBe(0);
   });
@@ -331,7 +333,7 @@ describe("inspectWorkflows", () => {
       ].join("\n"),
     );
 
-    const report = await inspectWorkflows(root, RUNNER_LABELS);
+    const report = await inspectWorkflows(root, [RUNNER_LABELS]);
     expect(report.scanned).toBe(true);
     expect(report.workflowCount).toBe(1);
     expect(report.matches.map((t) => t.job)).toEqual(["local"]);
@@ -345,7 +347,7 @@ describe("inspectWorkflows", () => {
     await write("broken.yml", "jobs:\n  a:\n   runs-on: [oops\n");
     await write("good.yml", "jobs:\n  b:\n    runs-on: [self-hosted, gh-runner]\n");
 
-    const report = await inspectWorkflows(root, RUNNER_LABELS);
+    const report = await inspectWorkflows(root, [RUNNER_LABELS]);
     expect(report.unparsed.map((u) => u.file)).toEqual([".github/workflows/broken.yml"]);
     expect(report.matches.map((t) => t.job)).toEqual(["b"]);
   });
@@ -353,7 +355,7 @@ describe("inspectWorkflows", () => {
   it("reads every workflow file, .yaml included", async () => {
     await write("a.yml", "jobs:\n  one:\n    runs-on: ubuntu-latest");
     await write("b.yaml", "jobs:\n  two:\n    runs-on: [self-hosted, gh-runner]");
-    const report = await inspectWorkflows(root, RUNNER_LABELS);
+    const report = await inspectWorkflows(root, [RUNNER_LABELS]);
     expect(report.workflowCount).toBe(2);
     expect(report.matches.map((t) => t.job)).toEqual(["two"]);
   });

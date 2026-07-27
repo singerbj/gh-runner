@@ -12,17 +12,17 @@ import {
 } from "./docker.js";
 import { downloadCached, extractArchive } from "./download.js";
 import { CliError, InterruptedError } from "./errors.js";
+import { CommandFailedError, execCommand } from "./exec.js";
+import type { CommandRunner, ExecOptions, SpawnHook } from "./exec.js";
 import { proposeWorkflowFix } from "./fix.js";
 import type { WorkflowFixResult } from "./fix.js";
-import { CommandFailedError, execCommand } from "./exec.js";
-import type { CommandRunner, SpawnHook } from "./exec.js";
 import { GhClient } from "./gh.js";
 import { silentLogger } from "./logger.js";
 import type { Logger } from "./logger.js";
+import { promptMultiSelect } from "./menu.js";
+import type { MenuChoice } from "./menu.js";
 import { emptyOptions } from "./options.js";
 import type { RunnerOptions } from "./options.js";
-import { declineAll } from "./prompt.js";
-import type { Confirm } from "./prompt.js";
 import {
   defaultCacheDir,
   detectHostLabel,
@@ -32,7 +32,11 @@ import {
   runnerDownloadUrl,
   runnerScript,
 } from "./platform.js";
-import type { RunnerPlatform } from "./platform.js";
+import type { RunnerOs, RunnerPlatform } from "./platform.js";
+import { declineAll } from "./prompt.js";
+import type { Confirm } from "./prompt.js";
+import { availableTargets, parseTargetNames, planOptions, resolveTargets } from "./targets.js";
+import type { PlatformOption, ResolvedTarget } from "./targets.js";
 import { inspectWorkflows } from "./workflows.js";
 import type { WorkflowReport } from "./workflows.js";
 
@@ -40,16 +44,21 @@ export interface RunContext {
   logger?: Logger;
   commandRunner?: CommandRunner;
   gh?: GhClient;
-  /** Aborting this asks the runner to shut down and deregister. */
+  /** Aborting this asks every runner to shut down and deregister. */
   signal?: AbortSignal;
   platform?: RunnerPlatform;
   /** Node platform id, used for host-label detection. */
   nodePlatform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
-  /** Receives the spawned `run.sh` child so callers can forward signals. */
+  /** Receives each spawned runner child so callers can forward signals. */
   onRunnerSpawn?: SpawnHook;
   /** How to ask before opening the workflow PR. Defaults to never asking. */
   confirm?: Confirm;
+  /**
+   * How to ask which platforms to serve. Defaults to the terminal menu; a
+   * library caller that passes nothing simply gets the host platform.
+   */
+  selectPlatforms?: (choices: ReadonlyArray<MenuChoice<RunnerOs>>) => Promise<RunnerOs[] | null>;
 }
 
 export interface RunSummary {
@@ -60,10 +69,23 @@ export interface RunSummary {
   hostLabel: string;
   runnerVersion: string;
   platform: RunnerPlatform;
+  /** How this runner was hosted. */
+  mode: "native" | "docker";
   ephemeral: boolean;
+}
+
+export interface RunResult {
+  /** One entry per platform served. */
+  runners: RunSummary[];
   /** Result of the `runs-on` audit, when one ran. */
   workflows: WorkflowReport | undefined;
 }
+
+const SHORT_NAME: Readonly<Record<RunnerOs, string>> = {
+  osx: "mac",
+  linux: "linux",
+  win: "windows",
+};
 
 /**
  * Builds the argv for one of the runner's own scripts. Node won't spawn a
@@ -84,15 +106,28 @@ function runnerCommand(
   return { command: path, args: [...args] };
 }
 
+/** Everything one platform's runner needs, resolved and ready to go. */
+interface TargetPlan {
+  target: ResolvedTarget;
+  platform: RunnerPlatform;
+  runnerName: string;
+  /** Custom labels, `gh-runner` first. */
+  labels: string[];
+  /** Custom labels plus the ones GitHub adds for free. */
+  allLabels: string[];
+  /** `[macOS] ` when several runners share the terminal, otherwise undefined. */
+  prefix: string | undefined;
+}
+
 /**
- * Registers this machine as a self-hosted runner for `options.repo`, waits for
- * work, then deregisters and removes every trace of itself — including when the
- * caller aborts or the process is interrupted.
+ * Registers this machine as a self-hosted runner for one or more platforms,
+ * waits for work, then deregisters and removes every trace of itself —
+ * including when the caller aborts or the process is interrupted.
  */
 export async function ghRunner(
   partialOptions: Partial<RunnerOptions> = {},
   context: RunContext = {},
-): Promise<RunSummary> {
+): Promise<RunResult> {
   const options: RunnerOptions = { ...emptyOptions(), ...partialOptions };
   const logger = context.logger ?? silentLogger;
   const { bold, dim, green } = logger.styles;
@@ -130,23 +165,76 @@ export async function ghRunner(
   throwIfAborted();
 
   const hostPlatform = context.platform ?? detectPlatform();
-  // A container is a Linux machine no matter what the host is, so the labels
-  // and the workflow audit have to describe the container, not the host.
-  const platform: RunnerPlatform = options.docker
-    ? { os: "linux", arch: archForDockerPlatform(options.dockerPlatform, hostPlatform.arch) }
-    : hostPlatform;
-
   const hostLabel = await detectHostLabel(commandRunner, context.nodePlatform);
-  // Generic label first, then one pinned to this OS, then this specific box.
-  const labels = [DEFAULT_LABEL, osLabel(platform.os), hostLabel, ...options.labels];
-  const runnerName =
-    options.name ?? `${hostLabel}${options.docker ? "-docker" : ""}-${process.pid}`;
-  const allLabels = [...implicitLabels(platform), ...labels];
 
-  if (options.docker) {
-    await assertDockerAvailable(commandRunner, signal ? { signal } : {});
-    throwIfAborted();
+  const requested = parseTargetNames(options.platforms);
+  const wantsAll = options.all || requested.all;
+  const preferDocker = Boolean(options.dockerImage || options.dockerPlatform);
+  // Probing Docker is only worth it when something other than this machine's
+  // own OS might be on the table.
+  const mayNeedDocker =
+    wantsAll ||
+    preferDocker ||
+    requested.targets.some((os) => os !== hostPlatform.os) ||
+    (requested.targets.length === 0 && Boolean(context.selectPlatforms));
+
+  let dockerReady = false;
+  let dockerReason: string | undefined;
+  if (mayNeedDocker) {
+    try {
+      await assertDockerAvailable(commandRunner, signal ? { signal } : {});
+      dockerReady = true;
+    } catch (error) {
+      dockerReason = error instanceof Error ? error.message : String(error);
+    }
+  } else {
+    dockerReason = "not checked";
   }
+
+  const platformOptions = planOptions({
+    hostOs: hostPlatform.os,
+    dockerReady,
+    dockerReason,
+    preferDocker,
+  });
+
+  const chosen = await choosePlatforms({
+    options,
+    requested,
+    wantsAll,
+    platformOptions,
+    hostOs: hostPlatform.os,
+    logger,
+    ...(context.selectPlatforms ? { selectPlatforms: context.selectPlatforms } : {}),
+  });
+  throwIfAborted();
+
+  const targets = resolveTargets(chosen, platformOptions);
+  if (targets.length === 0) {
+    throw new CliError("no platforms selected — nothing to do");
+  }
+
+  const plans: TargetPlan[] = targets.map((target) => {
+    const platform: RunnerPlatform =
+      target.mode === "docker"
+        ? { os: "linux", arch: archForDockerPlatform(options.dockerPlatform, hostPlatform.arch) }
+        : { os: target.os, arch: hostPlatform.arch };
+
+    const labels = [DEFAULT_LABEL, osLabel(target.os), hostLabel, ...options.labels];
+    const short = SHORT_NAME[target.os];
+    const base = options.name ?? `${hostLabel}-${short}`;
+    const runnerName =
+      options.name && targets.length === 1 ? options.name : `${base}-${process.pid}`;
+
+    return {
+      target,
+      platform,
+      runnerName,
+      labels,
+      allLabels: [...implicitLabels(platform), ...labels],
+      prefix: targets.length > 1 ? `[${target.name}] ` : undefined,
+    };
+  });
 
   // Auditing and fixing workflows both need the checkout, not just the slug.
   const repoRoot = await gh.repoRoot(options.cwd ?? process.cwd());
@@ -154,7 +242,10 @@ export async function ghRunner(
   let workflows: WorkflowReport | undefined;
   if (!options.skipWorkflowCheck && repoRoot) {
     logger.say("Checking .github/workflows for a matching runs-on...");
-    workflows = await inspectWorkflows(repoRoot, allLabels);
+    workflows = await inspectWorkflows(
+      repoRoot,
+      plans.map((plan) => plan.allLabels),
+    );
     reportWorkflows(logger, workflows);
     throwIfAborted();
   }
@@ -184,84 +275,171 @@ export async function ghRunner(
     throwIfAborted();
   }
 
-  const banner = (extra: string[] = []) => {
-    // Pad against the longest so the annotations line up; styling is applied
-    // after measuring, since escape codes have no width.
-    const targets: Array<[string, string]> = [
-      [`runs-on: [self-hosted, ${DEFAULT_LABEL}]`, "any registered machine"],
-      [`runs-on: [self-hosted, ${osLabel(platform.os)}]`, `${OS_NAMES[platform.os]} only`],
-    ];
-    const width = Math.max(...targets.map(([snippet]) => snippet.length));
-
-    logger.raw(
-      [
-        "",
-        `  ${green("Runner is live.")}  Target it with:`,
-        "",
-        ...targets.map(
-          ([snippet, note]) =>
-            `      ${bold(snippet)}${" ".repeat(width - snippet.length)}  ${dim(note)}`,
-        ),
-        "",
-        `  Repo:   ${repo}`,
-        `  Labels: ${allLabels.join(", ")}`,
-        ...extra,
-        `  Mode:   ${
-          options.keep ? "staying online until you Ctrl+C" : "ephemeral — exits after one job"
-        }`,
-        "",
-        `  ${dim("Ctrl+C to stop and deregister.")}`,
-        "",
-        "",
-      ].join("\n"),
-    );
-  };
-
-  if (options.docker) {
-    return runContainerised({
-      repo,
-      options,
-      labels,
-      allLabels,
-      hostLabel,
-      runnerName,
-      platform,
-      commandRunner,
-      gh,
-      cleanupGh,
-      logger,
-      workflows,
-      banner,
-      ...(context.onRunnerSpawn ? { onRunnerSpawn: context.onRunnerSpawn } : {}),
-    });
-  }
-
+  // One version lookup covers every native runner; containers bring their own.
   let runnerVersion = options.runnerVersion;
-  if (!runnerVersion) {
+  if (!runnerVersion && plans.some((plan) => plan.target.mode === "native")) {
     logger.say("Looking up the latest runner release...");
     runnerVersion = await gh.latestRunnerVersion();
   }
   throwIfAborted();
 
-  const cacheDir = options.cacheDir ?? defaultCacheDir(env, context.nodePlatform);
-  const archive = runnerArchive(platform, runnerVersion);
-  const version = runnerVersion;
+  logger.raw(
+    [
+      "",
+      `  ${green(`Bringing up ${plans.length} runner${plans.length === 1 ? "" : "s"}.`)}  Target ${plans.length === 1 ? "it" : "them"} with:`,
+      "",
+      ...bannerTargets(plans, bold, dim),
+      "",
+      `  Repo:   ${repo}`,
+      `  Mode:   ${
+        options.keep ? "staying online until you Ctrl+C" : `ephemeral — each exits after one job`
+      }`,
+      "",
+      `  ${dim("Ctrl+C to stop and deregister.")}`,
+      "",
+      "",
+    ].join("\n"),
+  );
+
+  const shared = {
+    repo,
+    options,
+    hostLabel,
+    logger,
+    commandRunner,
+    gh,
+    cleanupGh,
+    env,
+    ...(signal ? { signal } : {}),
+    ...(context.onRunnerSpawn ? { onRunnerSpawn: context.onRunnerSpawn } : {}),
+  };
+
+  // Every runner gets to finish and clean up even if a sibling blows up.
+  const settled = await Promise.allSettled(
+    plans.map((plan) =>
+      plan.target.mode === "docker"
+        ? runDockerTarget({ ...shared, plan })
+        : runNativeTarget({ ...shared, plan, runnerVersion: runnerVersion as string }),
+    ),
+  );
+
+  const runners: RunSummary[] = [];
+  let failure: unknown;
+  for (const outcome of settled) {
+    if (outcome.status === "fulfilled") runners.push(outcome.value);
+    else failure ??= outcome.reason;
+  }
+
+  if (failure && runners.length === 0) throw failure;
+  if (failure) {
+    logger.error(failure instanceof Error ? failure.message : String(failure));
+  }
+
+  return { runners, workflows };
+}
+
+interface ChooseInput {
+  options: RunnerOptions;
+  requested: { all: boolean; targets: RunnerOs[] };
+  wantsAll: boolean;
+  platformOptions: PlatformOption[];
+  hostOs: RunnerOs;
+  logger: Logger;
+  selectPlatforms?: (choices: ReadonlyArray<MenuChoice<RunnerOs>>) => Promise<RunnerOs[] | null>;
+}
+
+/** `--all` beats a menu, an explicit list beats both, and a menu beats a guess. */
+async function choosePlatforms(input: ChooseInput): Promise<RunnerOs[]> {
+  const { requested, wantsAll, platformOptions, hostOs } = input;
+
+  if (requested.targets.length > 0) {
+    // `all` alongside explicit names means "these, plus whatever else works".
+    const extra = wantsAll ? availableTargets(platformOptions) : [];
+    return [...new Set([...requested.targets, ...extra])];
+  }
+
+  if (wantsAll) {
+    return availableTargets(platformOptions);
+  }
+
+  if (input.selectPlatforms) {
+    const choices: Array<MenuChoice<RunnerOs>> = platformOptions.map((option) => ({
+      value: option.os,
+      label: option.name,
+      detail: option.detail,
+      disabled: !option.available,
+      // Pre-tick this machine's own OS: the common case is one keypress.
+      selected: option.available && option.os === hostOs,
+    }));
+
+    const picked = await input.selectPlatforms(choices);
+    if (picked === null) {
+      throw new InterruptedError();
+    }
+    if (picked.length > 0) {
+      return picked;
+    }
+  }
+
+  return [hostOs];
+}
+
+function bannerTargets(
+  plans: readonly TargetPlan[],
+  bold: (s: string) => string,
+  dim: (s: string) => string,
+): string[] {
+  const rows: Array<[string, string]> = [
+    [`runs-on: [self-hosted, ${DEFAULT_LABEL}]`, "any registered machine"],
+    ...plans.map((plan): [string, string] => [
+      `runs-on: [self-hosted, ${plan.target.label}]`,
+      `${plan.target.name} only ${plan.target.mode === "docker" ? "(container)" : "(native)"}`,
+    ]),
+  ];
+  const width = Math.max(...rows.map(([snippet]) => snippet.length));
+
+  return rows.map(
+    ([snippet, note]) =>
+      `      ${bold(snippet)}${" ".repeat(width - snippet.length)}  ${dim(note)}`,
+  );
+}
+
+interface TargetRun {
+  plan: TargetPlan;
+  repo: string;
+  options: RunnerOptions;
+  hostLabel: string;
+  logger: Logger;
+  commandRunner: CommandRunner;
+  gh: GhClient;
+  cleanupGh: GhClient;
+  env: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  onRunnerSpawn?: SpawnHook;
+}
+
+/** Downloads, registers, and runs a runner directly on this machine. */
+async function runNativeTarget(run: TargetRun & { runnerVersion: string }): Promise<RunSummary> {
+  const { plan, repo, options, logger, commandRunner, gh, cleanupGh, env, signal } = run;
+  const { platform } = plan;
+  const say = (message: string) => logger.say(`${plan.prefix ?? ""}${message}`);
+
+  const cacheDir = options.cacheDir ?? defaultCacheDir(env);
+  const archive = runnerArchive(platform, run.runnerVersion);
   const cached = await downloadCached({
-    url: runnerDownloadUrl(platform, version),
+    url: runnerDownloadUrl(platform, run.runnerVersion),
     cacheDir,
     fileName: archive,
     ...(signal ? { signal } : {}),
     onDownloadStart: () => {
-      logger.say(
-        `Downloading runner v${version} (${platform.os}-${platform.arch})... ${dim("cached for next time")}`,
+      say(
+        `Downloading runner v${run.runnerVersion} (${platform.os}-${platform.arch})... ${logger.styles.dim("cached for next time")}`,
       );
     },
   });
-  throwIfAborted();
 
   const tmpRoot = await mkdtemp(join(env["TMPDIR"] || tmpdir(), "gh-runner-"));
   const runnerDir = join(tmpRoot, "runner");
-  let summary: RunSummary | undefined;
 
   try {
     await mkdir(runnerDir, { recursive: true });
@@ -269,11 +447,9 @@ export async function ghRunner(
       ...(signal ? { signal } : {}),
       zip: platform.os === "win",
     });
-    throwIfAborted();
 
-    logger.say(`Requesting a registration token for ${bold(repo)}...`);
+    say(`Requesting a registration token for ${logger.styles.bold(repo)}...`);
     const registrationToken = await gh.registrationToken(repo);
-    throwIfAborted();
 
     const configArgs = [
       "--unattended",
@@ -283,17 +459,15 @@ export async function ghRunner(
       "--token",
       registrationToken,
       "--name",
-      runnerName,
+      plan.runnerName,
       "--labels",
-      labels.join(","),
+      plan.labels.join(","),
       "--work",
       "_work",
     ];
-    if (!options.keep) {
-      configArgs.push("--ephemeral");
-    }
+    if (!options.keep) configArgs.push("--ephemeral");
 
-    logger.say("Registering...");
+    say("Registering...");
     const config = runnerCommand(platform, runnerDir, "config", configArgs, env);
     try {
       const result = await commandRunner(config.command, config.args, {
@@ -306,82 +480,59 @@ export async function ghRunner(
     } catch (error) {
       if (error instanceof InterruptedError) throw error;
       const detail = error instanceof CommandFailedError ? error.result.stderr.trim() : "";
-      throw new CliError(`runner registration failed${detail ? `\n       ${detail}` : ""}`);
+      throw new CliError(
+        `${plan.prefix ?? ""}runner registration failed${detail ? `\n       ${detail}` : ""}`,
+      );
     }
-
-    summary = {
-      repo,
-      runnerName,
-      labels,
-      hostLabel,
-      runnerVersion: version,
-      platform,
-      ephemeral: !options.keep,
-      workflows,
-    };
-
-    banner();
+    say(`${logger.styles.green("Runner is live.")} Waiting for a job...`);
 
     // No abort signal here: Ctrl+C reaches the runner through the terminal's
     // foreground process group, and it shuts itself down cleanly.
-    const run = runnerCommand(platform, runnerDir, "run", [], env);
-    await commandRunner(run.command, run.args, {
+    const runScript = runnerCommand(platform, runnerDir, "run", [], env);
+    const stdio: ExecOptions = plan.prefix ? { prefix: plan.prefix } : { inherit: true };
+    await commandRunner(runScript.command, runScript.args, {
       cwd: runnerDir,
-      inherit: true,
-      ...(context.onRunnerSpawn ? { onSpawn: context.onRunnerSpawn } : {}),
+      ...stdio,
+      ...(run.onRunnerSpawn ? { onSpawn: run.onRunnerSpawn } : {}),
     });
   } finally {
-    await deregister(cleanupGh, commandRunner, repo, runnerDir, logger, platform, env);
+    await deregisterNative(cleanupGh, commandRunner, repo, runnerDir, logger, platform, env, plan);
     await rm(tmpRoot, { recursive: true, force: true });
   }
 
-  if (!summary) {
-    throw new CliError("runner exited before it finished registering");
-  }
-  return summary;
-}
-
-interface ContainerRun {
-  repo: string;
-  options: RunnerOptions;
-  labels: string[];
-  allLabels: string[];
-  hostLabel: string;
-  runnerName: string;
-  platform: RunnerPlatform;
-  commandRunner: CommandRunner;
-  gh: GhClient;
-  cleanupGh: GhClient;
-  logger: Logger;
-  workflows: WorkflowReport | undefined;
-  banner: (extra?: string[]) => void;
-  onRunnerSpawn?: SpawnHook;
+  return {
+    repo,
+    runnerName: plan.runnerName,
+    labels: plan.labels,
+    hostLabel: run.hostLabel,
+    runnerVersion: run.runnerVersion,
+    platform,
+    mode: "native",
+    ephemeral: !options.keep,
+  };
 }
 
 /**
- * Runs the runner inside a Linux container.
+ * Runs a Linux runner inside a container.
  *
  * Nothing is downloaded or extracted — GitHub's runner image already has it —
  * and nothing is written to the host at all. Deregistration goes through the
  * API rather than `config.sh remove`, because by then the container is gone.
  */
-async function runContainerised(run: ContainerRun): Promise<RunSummary> {
-  const { repo, options, logger, commandRunner, gh, cleanupGh, platform } = run;
-  const { dim } = logger.styles;
+async function runDockerTarget(run: TargetRun): Promise<RunSummary> {
+  const { plan, repo, options, logger, commandRunner, gh, cleanupGh } = run;
+  const say = (message: string) => logger.say(`${plan.prefix ?? ""}${message}`);
   const image = options.dockerImage ?? DEFAULT_IMAGE;
-  const containerName = `gh-runner-${process.pid}`;
+  const containerName = `${plan.runnerName}`;
 
-  logger.say(`Requesting a registration token for ${logger.styles.bold(repo)}...`);
+  say(`Requesting a registration token for ${logger.styles.bold(repo)}...`);
   const registrationToken = await gh.registrationToken(repo);
 
-  logger.say(`Starting ${image}... ${dim("first run pulls the image, which takes a while")}`);
+  say(
+    `Starting ${image}... ${logger.styles.dim("the first run pulls the image, which takes a while")}`,
+  );
 
   try {
-    run.banner([
-      `  Image:  ${image}${options.dockerPlatform ? ` (${options.dockerPlatform})` : ""}`,
-      `  Host:   this machine, via Docker — the job cannot see your filesystem`,
-    ]);
-
     await runInDocker(
       commandRunner,
       {
@@ -389,37 +540,38 @@ async function runContainerised(run: ContainerRun): Promise<RunSummary> {
         image,
         dockerPlatform: options.dockerPlatform,
         containerName,
-        runnerName: run.runnerName,
-        labels: run.labels,
+        runnerName: plan.runnerName,
+        labels: plan.labels,
         ephemeral: !options.keep,
         registrationToken,
       },
       run.onRunnerSpawn,
+      plan.prefix,
     );
   } finally {
     await removeContainer(commandRunner, containerName);
     // An ephemeral runner that took a job is already retired; this catches the
     // one that never did.
-    if (await cleanupGh.deleteRunnerByName(repo, run.runnerName)) {
-      logger.say("Deregistered runner.");
+    if (await cleanupGh.deleteRunnerByName(repo, plan.runnerName)) {
+      say("Deregistered runner.");
     }
   }
 
   return {
     repo,
-    runnerName: run.runnerName,
-    labels: run.labels,
+    runnerName: plan.runnerName,
+    labels: plan.labels,
     hostLabel: run.hostLabel,
     runnerVersion: "container",
-    platform,
+    platform: plan.platform,
+    mode: "docker",
     ephemeral: !options.keep,
-    workflows: run.workflows,
   };
 }
 
 /**
- * Only worth interrupting someone over when nothing at all would pick this
- * runner up — if some job already targets it, the setup is working.
+ * Only worth interrupting someone over when nothing at all would pick these
+ * runners up — if some job already targets them, the setup is working.
  */
 export function workflowsNeedFix(report: WorkflowReport | undefined): boolean {
   return Boolean(report?.scanned && report.matches.length === 0 && report.hosted.length > 0);
@@ -457,14 +609,14 @@ function reportWorkflows(logger: Logger, report: WorkflowReport): void {
   for (const { target, missing } of report.missing) {
     line(
       `${dim("!")} ${target.file}:${target.line} ${dim("→")} ${bold(target.job)} wants ` +
-        `${missing.join(", ")}, which this runner won't have`,
+        `${missing.join(", ")}, which no runner here will have`,
     );
 
     // A label pinned to another OS isn't something --labels can fix.
     const otherOs = missing.map(osForLabel).find((os) => os !== null);
     if (otherOs) {
       line(
-        `  ${dim(`that job wants ${OS_NAMES[otherOs]} — run gh-runner on a ${OS_NAMES[otherOs]} machine`)}`,
+        `  ${dim(`that job wants ${OS_NAMES[otherOs]} — add it with: gh-runner ${SHORT_NAME[otherOs]}`)}`,
       );
     } else {
       line(`  ${dim(`register it too with: --labels ${missing.join(",")}`)}`);
@@ -487,7 +639,7 @@ function reportWorkflows(logger: Logger, report: WorkflowReport): void {
   if (report.matches.length === 0) {
     const hosted = report.hosted.length;
     line(
-      `${dim("!")} no job targets this runner` +
+      `${dim("!")} no job targets these runners` +
         (hosted > 0 ? `; ${hosted} target${hosted === 1 ? "s" : ""} GitHub-hosted runners` : ""),
     );
   }
@@ -512,14 +664,14 @@ function reportFix(logger: Logger, fix: WorkflowFixResult): void {
       return;
     case "opened":
       for (const { file, job } of fix.jobs) {
-        line(`${green("✓")} ${file} ${dim("→")} ${bold(job)} now targets this runner`);
+        line(`${green("✓")} ${file} ${dim("→")} ${bold(job)} now targets these runners`);
       }
       line(`${green("Pull request opened:")} ${fix.url ?? `branch ${fix.branch}`}`);
       return;
   }
 }
 
-async function deregister(
+async function deregisterNative(
   gh: GhClient,
   commandRunner: CommandRunner,
   repo: string,
@@ -527,13 +679,14 @@ async function deregister(
   logger: Logger,
   platform: RunnerPlatform,
   env: NodeJS.ProcessEnv,
+  plan: TargetPlan,
 ): Promise<void> {
   // `.runner` only exists once config.sh has actually registered us.
   if (!existsSync(join(runnerDir, ".runner"))) {
     return;
   }
 
-  logger.say("Deregistering runner...");
+  logger.say(`${plan.prefix ?? ""}Deregistering runner...`);
   const token = await gh.removeToken(repo);
   if (!token) {
     logger.error(
@@ -550,4 +703,14 @@ async function deregister(
     // Best effort: an ephemeral runner is removed server-side after its job
     // anyway, and we are on the way out.
   }
+}
+
+/** The default platform picker: the terminal menu. */
+export function terminalPlatformPicker(
+  choices: ReadonlyArray<MenuChoice<RunnerOs>>,
+): Promise<RunnerOs[] | null> {
+  return promptMultiSelect({
+    title: "Which platforms should this machine serve?",
+    choices,
+  });
 }

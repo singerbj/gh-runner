@@ -9,6 +9,7 @@ import {
   FIX_BRANCH_PREFIX,
   HOSTED_PROBE_RUNS_ON,
   PROBE_RUNS_ON_VAR,
+  SELF_HOSTED_ONLY_PROBE_RUNS_ON,
   SELF_HOSTED_PROBE_RUNS_ON,
   actionRef,
   osLabel,
@@ -27,7 +28,7 @@ import {
   applyWorkflowFix,
   hostedRunnerOs,
   inspectWorkflows,
-  usesProbeVariable,
+  listWorkflowFiles,
 } from "./workflows.js";
 import type { RunsOnFix, RunsOnTarget } from "./workflows.js";
 
@@ -43,6 +44,12 @@ export function fixLabelFor(target: RunsOnTarget, override?: string | undefined)
   if (override) return override;
   const os = hostedRunnerOs(target.labels);
   return os ? osLabel(os) : DEFAULT_LABEL;
+}
+
+/** The probe job's own `runs-on` for the mode this run was asked for. */
+function probeRunsOnFor(selfHostedProbe: boolean, noHostedFallback: boolean): string {
+  if (noHostedFallback) return SELF_HOSTED_ONLY_PROBE_RUNS_ON;
+  return selfHostedProbe ? SELF_HOSTED_PROBE_RUNS_ON : HOSTED_PROBE_RUNS_ON;
 }
 
 export interface WorkflowFixOptions {
@@ -63,6 +70,16 @@ export interface WorkflowFixOptions {
    * runner that is always there unless asked otherwise.
    */
   selfHostedProbe?: boolean;
+  /**
+   * Never name a GitHub-hosted runner in the rewritten workflows: every job
+   * falls back to the self-hosted labels it prefers, so it queues until a runner
+   * is up instead of resolving to one the repo may not be able to start.
+   *
+   * Implies {@link selfHostedProbe} — the probe job is the one every other job
+   * waits on, so leaving it hosted would fail the workflow before any of the
+   * fallbacks below could matter.
+   */
+  noHostedFallback?: boolean;
   /** Overrides the generated branch name. Used verbatim, suffix and all. */
   branch?: string;
   commandRunner: CommandRunner;
@@ -95,6 +112,8 @@ export type WorkflowFixResult =
       jobs: FixedJob[];
       /** True when the PR also moves the probe job off GitHub-hosted runners. */
       selfHostedProbe: boolean;
+      /** True when the PR leaves no GitHub-hosted runner named anywhere. */
+      noHostedFallback: boolean;
     };
 
 /**
@@ -171,23 +190,22 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
       ? report.hosted.filter((target) => options.jobs?.includes(target.job))
       : report.hosted;
 
-    // A repo fixed by an earlier run has nothing left to repoint, but its probe
-    // job may still pick its own runner the other way round. That is a change
-    // worth a PR on its own — otherwise switching a fixed repo over would mean
-    // editing the generated workflow by hand.
-    const selfHostedProbe = options.selfHostedProbe ?? false;
-    const staleProbes = report.verdicts
-      .map((verdict) => verdict.target)
-      .filter((target) => target.probe && usesProbeVariable(target) !== selfHostedProbe);
+    const noHostedFallback = options.noHostedFallback ?? false;
+    // The probe job is the one every other job waits on. Leaving it on a hosted
+    // runner would fail the workflow before any fallback below could matter, so
+    // asking for no hosted runners asks for this too.
+    const selfHostedProbe = noHostedFallback || (options.selfHostedProbe ?? false);
 
-    if (wanted.length === 0 && staleProbes.length === 0) {
+    // A repo fixed by an earlier run may have nothing left to repoint and still
+    // need this PR: its probe job, or the runner its jobs fall back to, can have
+    // been written the other way round. Rather than predict which, apply the
+    // plan to every workflow and keep the files it actually changes — so
+    // re-running the fix is how you switch a repo between the modes.
+    if (wanted.length === 0 && !report.verdicts.some((verdict) => verdict.target.probe)) {
       return { status: "no-changes" };
     }
 
     const byFile = new Map<string, RunsOnTarget[]>();
-    for (const target of staleProbes) {
-      byFile.set(target.file, byFile.get(target.file) ?? []);
-    }
     for (const target of wanted) {
       byFile.set(target.file, [...(byFile.get(target.file) ?? []), target]);
     }
@@ -197,25 +215,34 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
     // repo pins the ones it consumes.
     const uses = await resolveActionRef(gh);
 
-    for (const [file, targets] of byFile) {
+    const files: string[] = [];
+    for (const name of (await listWorkflowFiles(worktree)) ?? []) {
+      const file = `.github/workflows/${name}`;
       const path = join(worktree, file);
       const source = await readFile(path, "utf8");
-      const fixes: RunsOnFix[] = targets.map((target) => {
+      const fixes: RunsOnFix[] = (byFile.get(file) ?? []).map((target) => {
         const label = labelFor(target);
         return { target, key: probeKey(label), labels: ["self-hosted", label] };
       });
-      await writeFile(
-        path,
-        applyWorkflowFix(source, {
-          jobId: PROBE_JOB_ID,
-          actionRef: uses,
-          fixes,
-          ...(selfHostedProbe ? { probeRunsOn: SELF_HOSTED_PROBE_RUNS_ON } : {}),
-        }),
-      );
+
+      const output = applyWorkflowFix(source, {
+        jobId: PROBE_JOB_ID,
+        actionRef: uses,
+        fixes,
+        probeRunsOn: probeRunsOnFor(selfHostedProbe, noHostedFallback),
+        noHostedFallback,
+      });
+      if (output === source) continue;
+
+      await writeFile(path, output);
+      files.push(file);
     }
 
-    const files = [...byFile.keys()].toSorted();
+    if (files.length === 0) {
+      return { status: "no-changes" };
+    }
+
+    const mode: ProbeMode = { selfHostedProbe, noHostedFallback };
     const jobs: FixedJob[] = wanted.map((target) => ({
       file: target.file,
       job: target.job,
@@ -230,15 +257,17 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
         "commit",
         "--quiet",
         "-m",
-        commitMessage(jobs, selfHostedProbe),
+        commitMessage(jobs, mode),
       ],
       {
         cwd: worktree,
       },
     );
 
+    const done = { branch, base, files, jobs, selfHostedProbe, noHostedFallback };
+
     if (options.dryRun) {
-      return { status: "dry-run", branch, base, url: null, files, jobs, selfHostedProbe };
+      return { status: "dry-run", url: null, ...done };
     }
 
     await git(["push", "--quiet", "-u", "origin", branch], { cwd: worktree });
@@ -247,12 +276,12 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
       repo,
       base,
       head: branch,
-      title: pullRequestTitle(jobs, selfHostedProbe),
-      body: pullRequestBody(jobs, selfHostedProbe),
+      title: pullRequestTitle(jobs, mode),
+      body: pullRequestBody(jobs, mode),
       cwd: worktree,
     });
 
-    return { status: "opened", branch, base, url, files, jobs, selfHostedProbe };
+    return { status: "opened", url, ...done };
   } finally {
     // Leave nothing behind: no worktree, no local branch, no temp directory.
     await commandRunner("git", ["worktree", "remove", "--force", worktree], exec).catch(() => {});
@@ -327,54 +356,89 @@ export function fixLabels(jobs: readonly FixedJob[]): string[] {
   return [...new Set(jobs.map((entry) => entry.label))];
 }
 
-function jobList(jobs: readonly FixedJob[]): string {
+/** Which of the three ways a run was asked to write the workflow. */
+interface ProbeMode {
+  selfHostedProbe: boolean;
+  noHostedFallback: boolean;
+}
+
+/** What a job falls through to when no runner is online, in prose. */
+function fallbackOf({ label, from }: FixedJob, mode: ProbeMode): string {
+  if (mode.noHostedFallback) return `[self-hosted, ${label}]`;
+  return from.length > 0 ? from.join(", ") : "its current runner";
+}
+
+function jobList(jobs: readonly FixedJob[], mode: ProbeMode): string {
   return jobs
-    .map(({ file, job, label, from }) => {
-      const fallback = from.length > 0 ? from.join(", ") : "its current runner";
-      return `- \`${job}\` in \`${file}\` → \`[self-hosted, ${label}]\`, else \`${fallback}\``;
+    .map((entry) => {
+      const target = `\`[self-hosted, ${entry.label}]\``;
+      return mode.noHostedFallback
+        ? `- \`${entry.job}\` in \`${entry.file}\` → ${target} ${`(was \`${entry.from.join(", ") || "its current runner"}\`)`}`
+        : `- \`${entry.job}\` in \`${entry.file}\` → ${target}, else \`${fallbackOf(entry, mode)}\``;
     })
     .join("\n");
 }
 
-function commitMessage(jobs: readonly FixedJob[], selfHostedProbe: boolean): string {
+function commitMessage(jobs: readonly FixedJob[], mode: ProbeMode): string {
   const labels = fixLabels(jobs);
+
+  const answer = mode.noHostedFallback
+    ? "the self-hosted labels either way, so a job waits for a runner instead of"
+    : "the self-hosted labels when a machine is registered, and otherwise";
+  const otherwise = mode.noHostedFallback
+    ? "falling back to a GitHub-hosted runner."
+    : "exactly the runner it uses today.";
+
+  const probeOnly = mode.noHostedFallback
+    ? [
+        "Nothing in these workflows names a GitHub-hosted runner any more.",
+        `The ${PROBE_JOB_ID} job asks for the self-hosted labels outright, and`,
+        "every job it picks runners for queues rather than falling back.",
+      ]
+    : [
+        `The ${PROBE_JOB_ID} job now takes its own runs-on from the`,
+        `${PROBE_RUNS_ON_VAR} repository variable, which gh-runner sets`,
+        "while a runner is online.",
+      ];
 
   const body =
     jobs.length === 0
-      ? [
-          `The ${PROBE_JOB_ID} job now takes its own runs-on from the`,
-          `${PROBE_RUNS_ON_VAR} repository variable, which gh-runner sets`,
-          "while a runner is online.",
-        ]
+      ? probeOnly
       : [
           `A ${PROBE_JOB_ID} job asks which runners are up, and each job's`,
-          "runs-on reads the answer: the self-hosted labels when a machine is",
-          "registered, and otherwise exactly the runner it uses today.",
+          `runs-on reads the answer: ${answer}`,
+          otherwise,
           "",
           ...labels.map((label) => `  ${label}: ${jobsFor(jobs, label).join(", ")}`),
         ];
 
-  return [pullRequestTitle(jobs, selfHostedProbe), "", ...body, "", "Generated by gh-runner."].join(
-    "\n",
-  );
+  return [pullRequestTitle(jobs, mode), "", ...body, "", "Generated by gh-runner."].join("\n");
 }
 
 function jobsFor(jobs: readonly FixedJob[], label: string): string[] {
   return jobs.filter((entry) => entry.label === label).map((entry) => entry.job);
 }
 
-function pullRequestTitle(jobs: readonly FixedJob[], selfHostedProbe: boolean): string {
+function pullRequestTitle(jobs: readonly FixedJob[], mode: ProbeMode): string {
   if (jobs.length === 0) {
-    return selfHostedProbe
+    if (mode.noHostedFallback) return `Stop using GitHub-hosted runners in these workflows`;
+    return mode.selfHostedProbe
       ? `Run the ${PROBE_JOB_ID} job on a self-hosted runner too`
       : `Run the ${PROBE_JOB_ID} job on a GitHub-hosted runner`;
   }
   const count = `${jobs.length} job${jobs.length === 1 ? "" : "s"}`;
-  return `Use a self-hosted runner for ${count} when one is online`;
+  return mode.noHostedFallback
+    ? `Move ${count} onto self-hosted runners only`
+    : `Use a self-hosted runner for ${count} when one is online`;
 }
 
-function pullRequestBody(jobs: readonly FixedJob[], selfHostedProbe: boolean): string {
+function pullRequestBody(jobs: readonly FixedJob[], mode: ProbeMode): string {
   const minutes = Math.round(MARKER_MAX_AGE_SECONDS / 60);
+
+  const lead = mode.noHostedFallback
+    ? `Each of these jobs now runs on a self-hosted runner, and waits for one when none is online:`
+    : `Each of these jobs now runs on a self-hosted runner when one is online, and on exactly the
+runner it uses today when none is:`;
 
   const repointed =
     jobs.length === 0
@@ -385,10 +449,9 @@ the jobs it already picks runners for are unchanged.
 `
       : `## What this changes
 
-Each of these jobs now runs on a self-hosted runner when one is online, and on exactly the
-runner it uses today when none is:
+${lead}
 
-${jobList(jobs)}
+${jobList(jobs, mode)}
 
 Picking between the two is a \`${PROBE_JOB_ID}\` job. It runs
 [\`${ACTION_REPO}/${ACTION_PATH}\`](https://github.com/${ACTION_REPO}/tree/main/${ACTION_PATH}),
@@ -400,7 +463,24 @@ Each job keeps the platform it had: a \`macos-*\` job asks for \`${osLabel("osx"
 generic \`${DEFAULT_LABEL}\` label, which any registered machine answers.
 `;
 
-  return `${repointed}${probeRunnerSection(selfHostedProbe)}
+  const staleMarker = mode.noHostedFallback
+    ? `A marker that stops being re-stamped is ignored after ${minutes} minutes, so a laptop that
+closes mid-session leaves the next run queued until a runner is back — which is what this PR asks
+for.`
+    : `A marker that stops being re-stamped is ignored after ${minutes} minutes,
+so a laptop that closes mid-session sends the next run back to GitHub-hosted rather than leaving
+it queued.`;
+
+  const failure = mode.noHostedFallback
+    ? `- **It fails closed, by design.** A broken token, an API error, or no runner online all leave
+  these jobs queued rather than sending them to a GitHub-hosted runner. That is the point — a repo
+  that can't start hosted runners gets nothing from a fallback onto them — but it does mean CI
+  needs someone running \`gh-runner\` to make progress. Re-run
+  \`gh-runner --fix-workflows\` without \`--no-hosted-fallback\` to put the hosted fallbacks back.`
+    : `- It fails open. A broken token, an API error, or no runner online all resolve to the fallback
+  above, so a merged version of this can't leave your CI waiting on hardware nobody has started.`;
+
+  return `${repointed}${probeRunnerSection(mode)}
 ## How it knows
 
 [\`gh-runner\`](https://www.npmjs.com/package/@singerbj/gh-runner) registers a developer machine as an
@@ -408,15 +488,12 @@ ephemeral self-hosted runner, and while it is up it publishes a ref under
 \`refs/gh-runner/online/\` and re-stamps it every couple of minutes. The probe job reads those refs.
 
 Asking GitHub directly which runners are online needs repo admin, and no \`GITHUB_TOKEN\` can be
-granted it — hence the refs. A marker that stops being re-stamped is ignored after ${minutes} minutes,
-so a laptop that closes mid-session sends the next run back to GitHub-hosted rather than leaving
-it queued.
+granted it — hence the refs. ${staleMarker}
 
 ## Before you merge
 
-${probeCaveat(selfHostedProbe)}
-- It fails open. A broken token, an API error, or no runner online all resolve to the fallback
-  above, so a merged version of this can't leave your CI waiting on hardware nobody has started.
+${probeCaveat(mode)}
+${failure}
 - Nothing here makes a job *require* your machine. To do that, ask for the labels directly:
   \`runs-on: [self-hosted, ${DEFAULT_LABEL}]\`.
 
@@ -426,8 +503,24 @@ _Generated by [gh-runner](https://github.com/singerbj/gh-runner)_
 }
 
 /** Where the probe job itself runs, and why. */
-function probeRunnerSection(selfHostedProbe: boolean): string {
-  if (!selfHostedProbe) {
+function probeRunnerSection(mode: ProbeMode): string {
+  if (mode.noHostedFallback) {
+    return `
+## Where the probe runs
+
+\`runs-on: ${SELF_HOSTED_ONLY_PROBE_RUNS_ON}\`
+
+Named outright, with no fallback and no repository variable: there is nothing left to choose
+between once GitHub-hosted runners are off the table. The probe job queues until a runner is up,
+and so does everything downstream of it.
+
+This is the mode for a repo that *cannot* use GitHub-hosted runners — a spending limit, a failed
+payment, a disabled billing account. Falling back to a runner the repo can't start isn't a safety
+net; it's the same failure with an extra step.
+`;
+  }
+
+  if (!mode.selfHostedProbe) {
     return `
 ## Where the probe runs
 
@@ -456,8 +549,12 @@ repository variable is the only thing a runner can set that it can read.
 }
 
 /** The line about the probe job in "Before you merge". */
-function probeCaveat(selfHostedProbe: boolean): string {
-  if (!selfHostedProbe) {
+function probeCaveat(mode: ProbeMode): string {
+  if (mode.noHostedFallback) {
+    return `- The probe adds a few seconds to every run, and it needs a runner like any other job.`;
+  }
+
+  if (!mode.selfHostedProbe) {
     return `- The probe adds a few seconds to every run, and it runs on a GitHub-hosted runner.`;
   }
 

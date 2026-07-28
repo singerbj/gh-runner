@@ -235,6 +235,7 @@ Only GitHub-hosted jobs get repointed. A job already asking for `self-hosted` wi
 - `--fix-jobs build,test` limits the rewrite to specific job ids.
 - `--fix-label gh-runner-mac` forces one label onto every rewritten job, instead of letting each job keep its own platform. Each job's fallback is still its own.
 - `--self-hosted-probe` lets the `gh-runner-check` job run here too — see below.
+- `--no-hosted-fallback` leaves no GitHub-hosted runner named anywhere, so jobs queue for a self-hosted one instead of falling back — see below.
 - `--no-fix-workflows` never offers.
 - `--no-workflow-check` skips the audit entirely.
 
@@ -278,29 +279,72 @@ Re-running the fix is how you switch a repo between the two: on a repo that's al
 
 If the branch already exists on the remote, it links the open PR instead of stacking a second one.
 
+### When they're never coming back
+
+`--self-hosted-probe` fixes the probe job. It does not fix the jobs downstream of it, and on a repo that genuinely cannot start a hosted runner, that gap is the whole problem.
+
+Every repointed job is written as
+
+```yaml
+runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || 'ubuntu-latest' }}
+```
+
+and the probe resolves that key to `ubuntu-latest` whenever no runner is online. The `||` and the probe's own fallback both name a hosted runner, on purpose: the default is to fail _open_, so a merged fix can never leave CI waiting on hardware nobody started.
+
+Under a spending limit, failing open is failing. The fallback can't start either, so every job hits the same error the probe job used to — just later. If hosted runners are unavailable rather than merely unwanted:
+
+```bash
+npx @singerbj/gh-runner --fix-workflows --no-hosted-fallback
+```
+
+Nothing in the rewritten workflows then names a GitHub-hosted runner. The probe job asks for its labels outright — no variable, no fallback, nothing left to choose between:
+
+```yaml
+runs-on: [self-hosted, gh-runner]
+```
+
+and every job it feeds falls through to the labels it prefers rather than to a hosted image:
+
+```yaml
+runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || fromJSON('["self-hosted","gh-runner-linux"]') }}
+```
+
+A job with no runner online now **queues** instead of failing. Queued is the better failure: the run completes as soon as someone starts `gh-runner`, with no re-run needed.
+
+The flag implies `--self-hosted-probe`, because a hosted probe job would fail the workflow before any of those fallbacks could matter.
+
+**The trade:** this fails _closed_. A broken token, an API error, or simply nobody running `gh-runner` leaves CI queued rather than green — jobs wait up to GitHub's 24-hour limit and are then cancelled. That's the right trade only when the hosted alternative doesn't exist; for every other repo, keep the fallback.
+
+Re-running the fix switches a repo either way, including one already fixed the ordinary way — it converts the jobs, not just the probe. The runner each job originally used is kept in the probe's `targets` input under `hosted`, so re-running without the flag restores the fallbacks exactly:
+
+```jsonc
+"linux": { "labels": ["self-hosted","gh-runner-linux"], "fallback": ["self-hosted","gh-runner-linux"], "hosted": "ubuntu-latest" }
+```
+
 ### Options
 
-| Option                   | Description                                                       |
-| ------------------------ | ----------------------------------------------------------------- |
-| `--once`, `--ephemeral`  | Take one job, then deregister (default: stay online)              |
-| `--labels a,b,c`         | Extra labels on top of the `gh-runner` set and the host label     |
-| `--repo OWNER/NAME`      | Target a specific repo instead of detecting from cwd              |
-| `--name NAME`            | Runner name to register (default: `<host>-<pid>`)                 |
-| `--allow-public`         | Register even if the repo isn't confirmed private (**dangerous**) |
-| `--all`                  | Serve every platform this machine can                             |
-| `--os a,b`, `--platform` | Platforms to serve (same as positional arguments)                 |
-| `--docker-image IMAGE`   | Image for containerised runners (default GitHub's runner image)   |
-| `--docker-platform P`    | Container platform, e.g. `linux/amd64`                            |
-| `--runner-version X.Y.Z` | Pin the runner version (default: latest release)                  |
-| `--cache-dir PATH`       | Where to cache runner tarballs                                    |
-| `--no-workflow-check`    | Skip the `runs-on` audit of `.github/workflows`                   |
-| `--fix-workflows`        | Open the workflow PR without asking first                         |
-| `--no-fix-workflows`     | Never offer to open it                                            |
-| `--fix-jobs a,b`         | Limit the fix to these job ids                                    |
-| `--fix-label LABEL`      | Force one label on every job the fix PR rewrites                  |
-| `--self-hosted-probe`    | Let the fix PR's probe job run here too, not only on a hosted one |
-| `-h, --help`             | Show help                                                         |
-| `-v, --version`          | Show version                                                      |
+| Option                   | Description                                                        |
+| ------------------------ | ------------------------------------------------------------------ |
+| `--once`, `--ephemeral`  | Take one job, then deregister (default: stay online)               |
+| `--labels a,b,c`         | Extra labels on top of the `gh-runner` set and the host label      |
+| `--repo OWNER/NAME`      | Target a specific repo instead of detecting from cwd               |
+| `--name NAME`            | Runner name to register (default: `<host>-<pid>`)                  |
+| `--allow-public`         | Register even if the repo isn't confirmed private (**dangerous**)  |
+| `--all`                  | Serve every platform this machine can                              |
+| `--os a,b`, `--platform` | Platforms to serve (same as positional arguments)                  |
+| `--docker-image IMAGE`   | Image for containerised runners (default GitHub's runner image)    |
+| `--docker-platform P`    | Container platform, e.g. `linux/amd64`                             |
+| `--runner-version X.Y.Z` | Pin the runner version (default: latest release)                   |
+| `--cache-dir PATH`       | Where to cache runner tarballs                                     |
+| `--no-workflow-check`    | Skip the `runs-on` audit of `.github/workflows`                    |
+| `--fix-workflows`        | Open the workflow PR without asking first                          |
+| `--no-fix-workflows`     | Never offer to open it                                             |
+| `--fix-jobs a,b`         | Limit the fix to these job ids                                     |
+| `--fix-label LABEL`      | Force one label on every job the fix PR rewrites                   |
+| `--self-hosted-probe`    | Let the fix PR's probe job run here too, not only on a hosted one  |
+| `--no-hosted-fallback`   | Name no hosted runner anywhere; jobs queue instead of falling back |
+| `-h, --help`             | Show help                                                          |
+| `-v, --version`          | Show version                                                       |
 
 ## Safety
 

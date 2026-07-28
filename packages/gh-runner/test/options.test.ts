@@ -42,6 +42,16 @@ describe("parseArgs", () => {
     expect(parseArgs(["--self-hosted-probe"]).options.selfHostedProbe).toBe(true);
   });
 
+  it("keeps the hosted fallbacks unless asked otherwise, and moves the probe with them", () => {
+    expect(parseArgs([]).options.noHostedFallback).toBe(false);
+
+    // The probe job gates every other one, so dropping the hosted fallbacks
+    // without moving it would fail the workflow before they could matter.
+    const options = parseArgs(["--no-hosted-fallback"]).options;
+    expect(options.noHostedFallback).toBe(true);
+    expect(options.selfHostedProbe).toBe(true);
+  });
+
   it.each([["-h"], ["--help"]])("treats %s as help", (flag) => {
     expect(parseArgs([flag]).kind).toBe("help");
   });

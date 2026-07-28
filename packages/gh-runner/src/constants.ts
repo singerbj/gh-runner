@@ -100,6 +100,17 @@ export const SELF_HOSTED_PROBE_RUNS_ON =
   `\${{ vars.${PROBE_RUNS_ON_VAR} && fromJSON(vars.${PROBE_RUNS_ON_VAR}) ` +
   `|| '${HOSTED_PROBE_RUNS_ON}' }}`;
 
+/**
+ * The probe job's `runs-on` with `--no-hosted-fallback`: the labels themselves,
+ * named outright.
+ *
+ * No variable and no expression, because there is nothing left to choose
+ * between — both branches of {@link SELF_HOSTED_PROBE_RUNS_ON} would resolve to
+ * this once the hosted side is gone. A workflow written this way queues until a
+ * runner is up rather than falling through to a runner the repo can't start.
+ */
+export const SELF_HOSTED_ONLY_PROBE_RUNS_ON = `[self-hosted, ${DEFAULT_LABEL}]`;
+
 /** The key a job reads out of the probe job's output — `linux`, `mac`, `windows`. */
 export const OS_KEYS: Readonly<Record<RunnerOs, string>> = {
   osx: "mac",

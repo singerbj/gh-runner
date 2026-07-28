@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   HOSTED_PROBE_RUNS_ON,
   PROBE_RUNS_ON_VAR,
+  SELF_HOSTED_ONLY_PROBE_RUNS_ON,
   SELF_HOSTED_PROBE_RUNS_ON,
 } from "../src/constants.js";
 import { CliError } from "../src/errors.js";
@@ -401,5 +402,53 @@ describe("proposeWorkflowFix", () => {
     expect(pushed).toContain(
       "runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || 'ubuntu-latest' }}",
     );
+  });
+
+  it("leaves no hosted runner named when asked for no hosted fallback", async () => {
+    const result = await propose({ noHostedFallback: true });
+    expect(result.status).toBe("opened");
+    if (result.status !== "opened") return;
+    expect(result.noHostedFallback).toBe(true);
+    // Asking for no hosted runners has to move the probe job too — it gates
+    // every other job, so leaving it hosted would fail the run regardless.
+    expect(result.selfHostedProbe).toBe(true);
+
+    const pushed = git(
+      checkout,
+      "show",
+      `refs/remotes/origin/${result.branch}:.github/workflows/ci.yml`,
+    );
+    expect(pushed).toContain(`    runs-on: ${SELF_HOSTED_ONLY_PROBE_RUNS_ON}\n`);
+    expect(pushed).toContain(
+      "runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || " +
+        'fromJSON(\'["self-hosted","gh-runner-linux"]\') }}',
+    );
+    expect(pushed).not.toContain(PROBE_RUNS_ON_VAR);
+  });
+
+  it("converts a repo fixed the ordinary way, jobs and probe alike", async () => {
+    const first = await propose({});
+    expect(first.status).toBe("opened");
+    if (first.status !== "opened") return;
+
+    git(checkout, "fetch", "--quiet", "origin", first.branch);
+    git(checkout, "merge", "--quiet", "--ff-only", `origin/${first.branch}`);
+    git(checkout, "push", "--quiet", "origin", "main");
+    git(checkout, "push", "--quiet", "origin", "--delete", first.branch);
+
+    const queued = await propose({ noHostedFallback: true });
+    expect(queued.status).toBe("opened");
+    if (queued.status !== "opened") return;
+    // Nothing left to repoint — the whole change is where jobs fall through to.
+    expect(queued.jobs).toEqual([]);
+
+    const pushed = git(
+      checkout,
+      "show",
+      `refs/remotes/origin/${queued.branch}:.github/workflows/ci.yml`,
+    );
+    expect(pushed).toContain(`    runs-on: ${SELF_HOSTED_ONLY_PROBE_RUNS_ON}\n`);
+    expect(pushed).not.toContain("|| 'ubuntu-latest' }}");
+    expect(pushed).toContain('|| fromJSON(\'["self-hosted","gh-runner-linux"]\') }}');
   });
 });

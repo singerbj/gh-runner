@@ -278,6 +278,7 @@ export async function ghRunner(
       ...(options.fixLabel ? { label: options.fixLabel } : {}),
       jobs: options.fixJobs,
       selfHostedProbe: options.selfHostedProbe,
+      noHostedFallback: options.noHostedFallback,
       commandRunner,
       gh,
       logger,
@@ -339,8 +340,13 @@ export async function ghRunner(
     logger,
     // Only where a probe job asks for it. The audit is the source of truth, but
     // it doesn't see a fix opened moments ago — and `--no-workflow-check` skips
-    // it entirely — so the flag counts on its own.
-    probeVariable: options.selfHostedProbe || (workflows?.selfHostedProbe ?? false),
+    // it entirely — so the flag counts on its own. Not under
+    // `--no-hosted-fallback`: that probe names its labels outright and never
+    // reads the variable, so publishing one would just be an API call that can
+    // warn about permissions nobody needs.
+    probeVariable:
+      (options.selfHostedProbe && !options.noHostedFallback) ||
+      (workflows?.selfHostedProbe ?? false),
   });
   await markers.start(await gh.defaultBranch(repo).catch(() => "main"));
 
@@ -744,7 +750,13 @@ function reportFix(logger: Logger, fix: WorkflowFixResult, plans: readonly Targe
         const fallback = from.length > 0 ? from.join(", ") : "its current runner";
         line(`${green("✓")} ${file} ${dim("→")} ${bold(job)} prefers ${label}, else ${fallback}`);
       }
-      if (fix.selfHostedProbe) {
+      if (fix.noHostedFallback) {
+        line(
+          `${green("✓")} ${bold(PROBE_JOB_ID)} and every job it feeds ask for self-hosted runners ${dim(
+            `— no GitHub-hosted runner is named anywhere, so jobs queue instead of falling back`,
+          )}`,
+        );
+      } else if (fix.selfHostedProbe) {
         line(
           `${green("✓")} ${bold(PROBE_JOB_ID)} runs here too ${dim(
             `— nothing in those workflows needs a GitHub-hosted runner`,

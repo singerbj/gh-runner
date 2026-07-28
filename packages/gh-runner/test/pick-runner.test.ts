@@ -97,6 +97,25 @@ describe("pick-runner action", () => {
     expect(outputs["any-online"]).toBe("true");
   });
 
+  it("queues on the self-hosted labels when that is what the fallback says", async () => {
+    // What `--no-hosted-fallback` writes: the fallback is the labels themselves,
+    // so an offline platform resolves to a runs-on nothing hosted can answer and
+    // the job waits. `hosted` records what was replaced and the action ignores it.
+    const queued = JSON.stringify({
+      linux: {
+        labels: ["self-hosted", "gh-runner-linux"],
+        fallback: ["self-hosted", "gh-runner-linux"],
+        hosted: "ubuntu-latest",
+      },
+    });
+
+    const outputs = await pick({ INPUT_TARGETS: queued });
+    expect(JSON.parse(outputs["runners"] ?? "{}")).toEqual({
+      linux: ["self-hosted", "gh-runner-linux"],
+    });
+    expect(outputs["any-online"]).toBe("false");
+  });
+
   it("falls back for a marker that has aged out", async () => {
     refs = [markerRef("gh-runner-linux", now() - 10_000) as string];
 

@@ -2,15 +2,25 @@ import { randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_LABEL, FIX_BRANCH_PREFIX, osLabel } from "./constants.js";
+import {
+  ACTION_PATH,
+  ACTION_REPO,
+  DEFAULT_LABEL,
+  FIX_BRANCH_PREFIX,
+  actionRef,
+  osLabel,
+  probeKey,
+} from "./constants.js";
 import { CliError } from "./errors.js";
 import { CommandFailedError, execCapture } from "./exec.js";
 import type { CommandRunner, ExecOptions } from "./exec.js";
 import type { GhClient } from "./gh.js";
 import type { Logger } from "./logger.js";
+import { MARKER_MAX_AGE_SECONDS } from "./markers.js";
 import { assertLabel } from "./options.js";
-import { applyRunsOnFix, hostedRunnerOs, inspectWorkflows } from "./workflows.js";
-import type { RunsOnTarget } from "./workflows.js";
+import { readVersion } from "./version.js";
+import { PROBE_JOB_ID, applyWorkflowFix, hostedRunnerOs, inspectWorkflows } from "./workflows.js";
+import type { RunsOnFix, RunsOnTarget } from "./workflows.js";
 
 /**
  * The label a rewritten job should ask for.
@@ -51,9 +61,9 @@ export interface WorkflowFixOptions {
 export interface FixedJob {
   file: string;
   job: string;
-  /** The label written into `runs-on`, alongside `self-hosted`. */
+  /** The label the job prefers, alongside `self-hosted`. */
   label: string;
-  /** The labels the job used to ask for, e.g. `["macos-14"]`. */
+  /** The labels the job used to ask for, and still falls back to, e.g. `["macos-14"]`. */
   from: string[];
 }
 
@@ -152,10 +162,22 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
       byFile.set(target.file, [...(byFile.get(target.file) ?? []), target]);
     }
 
+    // A tag can be repointed; the commit it names today can't. Resolving it
+    // here means the workflow this PR edits pins the action the same way this
+    // repo pins the ones it consumes.
+    const uses = await resolveActionRef(gh);
+
     for (const [file, targets] of byFile) {
       const path = join(worktree, file);
       const source = await readFile(path, "utf8");
-      await writeFile(path, applyRunsOnFix(source, targets, labelFor));
+      const fixes: RunsOnFix[] = targets.map((target) => {
+        const label = labelFor(target);
+        return { target, key: probeKey(label), labels: ["self-hosted", label] };
+      });
+      await writeFile(
+        path,
+        applyWorkflowFix(source, { jobId: PROBE_JOB_ID, actionRef: uses, fixes }),
+      );
     }
 
     const files = [...byFile.keys()].toSorted();
@@ -242,6 +264,29 @@ async function identityArgs(commandRunner: CommandRunner, exec: ExecOptions): Pr
   return ["-c", "user.name=gh-runner", "-c", "user.email=gh-runner@users.noreply.github.com"];
 }
 
+/**
+ * The `uses:` to write for the probe action.
+ *
+ * This version's own tag, resolved to the commit it points at. A build running
+ * ahead of its release — a local checkout, a version whose tag was deleted —
+ * would otherwise write a ref that doesn't contain the action at all, so the
+ * tag is only used once the action has been seen there. Failing that, the
+ * default branch: a mutable ref is worse than a pinned one, and better than a
+ * workflow that can't resolve its action.
+ */
+async function resolveActionRef(gh: GhClient): Promise<string> {
+  const version = readVersion();
+  const tag = `v${version}`;
+  const sha = await gh.tagSha(ACTION_REPO, tag);
+
+  if (sha && (await gh.pathExists(ACTION_REPO, sha, `${ACTION_PATH}/action.yml`))) {
+    return actionRef(version, sha);
+  }
+
+  const base = await gh.defaultBranch(ACTION_REPO).catch(() => "main");
+  return `${ACTION_REPO}/${ACTION_PATH}@${base}`;
+}
+
 /** The distinct labels the rewrite writes, in the order jobs first ask for them. */
 export function fixLabels(jobs: readonly FixedJob[]): string[] {
   return [...new Set(jobs.map((entry) => entry.label))];
@@ -250,29 +295,24 @@ export function fixLabels(jobs: readonly FixedJob[]): string[] {
 function jobList(jobs: readonly FixedJob[]): string {
   return jobs
     .map(({ file, job, label, from }) => {
-      const was = from.length > 0 ? ` — was \`${from.join(", ")}\`` : "";
-      return `- \`${job}\` in \`${file}\` → \`[self-hosted, ${label}]\`${was}`;
+      const fallback = from.length > 0 ? from.join(", ") : "its current runner";
+      return `- \`${job}\` in \`${file}\` → \`[self-hosted, ${label}]\`, else \`${fallback}\``;
     })
     .join("\n");
 }
 
 function commitMessage(jobs: readonly FixedJob[]): string {
   const labels = fixLabels(jobs);
-  const only = labels.length === 1 ? labels[0] : undefined;
-
   const count = `${jobs.length} job${jobs.length === 1 ? "" : "s"}`;
 
   return [
-    only
-      ? `Point ${count} at the self-hosted ${only} runner`
-      : `Point ${count} at self-hosted runners`,
+    `Use a self-hosted runner for ${count} when one is online`,
     "",
-    only
-      ? `runs-on is now [self-hosted, ${only}], so these jobs run on whichever\nmachine is currently registered under that label.`
-      : "runs-on now asks for the label pinned to the OS each job already ran on,\nso a macOS build still lands on a macOS machine:",
-    ...(only
-      ? []
-      : ["", ...labels.map((label) => `  ${label}: ${jobsFor(jobs, label).join(", ")}`)]),
+    "A new gh-runner-check job asks which runners are up, and each job's",
+    "runs-on reads the answer: the self-hosted labels when a machine is",
+    "registered, and otherwise exactly the runner it uses today.",
+    "",
+    ...labels.map((label) => `  ${label}: ${jobsFor(jobs, label).join(", ")}`),
     "",
     "Generated by gh-runner.",
   ].join("\n");
@@ -283,42 +323,47 @@ function jobsFor(jobs: readonly FixedJob[], label: string): string[] {
 }
 
 function pullRequestTitle(jobs: readonly FixedJob[]): string {
-  const labels = fixLabels(jobs);
-  return labels.length === 1
-    ? `Run CI on a self-hosted \`${labels[0]}\` runner`
-    : "Run CI on self-hosted runners";
+  const count = `${jobs.length} job${jobs.length === 1 ? "" : "s"}`;
+  return `Use a self-hosted runner for ${count} when one is online`;
 }
 
 function pullRequestBody(jobs: readonly FixedJob[]): string {
-  const labels = fixLabels(jobs);
-  const list = labels.map((label) => `\`${label}\``).join(", ");
-  const one = labels.length === 1;
+  const minutes = Math.round(MARKER_MAX_AGE_SECONDS / 60);
 
   return `## What this changes
 
-\`runs-on\` now targets a self-hosted runner for:
+Each of these jobs now runs on a self-hosted runner when one is online, and on exactly the
+runner it uses today when none is:
 
 ${jobList(jobs)}
+
+Picking between the two is a new \`${PROBE_JOB_ID}\` job. It runs
+[\`${ACTION_REPO}/${ACTION_PATH}\`](https://github.com/${ACTION_REPO}/tree/main/${ACTION_PATH}),
+which needs nothing but \`contents: read\` and the built-in \`GITHUB_TOKEN\` — there is no secret to
+add and no token to rotate.
 
 Each job keeps the platform it had: a \`macos-*\` job asks for \`${osLabel("osx")}\`, \`ubuntu-*\` for
 \`${osLabel("linux")}\`, \`windows-*\` for \`${osLabel("win")}\`. A job whose image doesn't name an OS gets the
 generic \`${DEFAULT_LABEL}\` label, which any registered machine answers.
 
-## Why
+## How it knows
 
 [\`gh-runner\`](https://www.npmjs.com/package/@singerbj/gh-runner) registers a developer machine as an
-ephemeral self-hosted runner under \`${DEFAULT_LABEL}\`, plus the label for the OS it is running
-(\`${osLabel("osx")}\`, \`${osLabel("linux")}\`, \`${osLabel("win")}\`). Jobs have to ask for a label before they can
-land on it, so this PR makes ${one ? "that label" : "those labels"} a stable contract in the workflow YAML.
+ephemeral self-hosted runner, and while it is up it publishes a ref under
+\`refs/gh-runner/online/\` and re-stamps it every couple of minutes. The probe job reads those refs.
+
+Asking GitHub directly which runners are online needs repo admin, and no \`GITHUB_TOKEN\` can be
+granted it — hence the refs. A marker that stops being re-stamped is ignored after ${minutes} minutes,
+so a laptop that closes mid-session sends the next run back to GitHub-hosted rather than leaving
+it queued.
 
 ## Before you merge
 
-These jobs will **only** run while a machine is registered under ${list}. With no runner
-online they queue instead of failing, so this is a deliberate trade: faster, local hardware in
-exchange for CI that depends on someone running \`npx @singerbj/gh-runner\`.
-
-Keep hosted runs for anything that must pass without a human present, and repoint only the jobs
-that genuinely need your hardware.
+- The probe adds a few seconds to every run, and it runs on a GitHub-hosted runner.
+- It fails open. A broken token, an API error, or no runner online all resolve to the fallback
+  above, so a merged version of this can't leave your CI waiting on hardware nobody has started.
+- Nothing here makes a job *require* your machine. To do that, ask for the labels directly:
+  \`runs-on: [self-hosted, ${DEFAULT_LABEL}]\`.
 
 ---
 _Generated by [gh-runner](https://github.com/singerbj/gh-runner)_

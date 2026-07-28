@@ -1,26 +1,13 @@
 #!/usr/bin/env node
 import type { ChildProcess } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { CliError, InterruptedError } from "./errors.js";
 import { createLogger } from "./logger.js";
 import { USAGE, parseArgs } from "./options.js";
 import { createConfirm } from "./prompt.js";
 import { ghRunner, terminalPlatformPicker } from "./runner.js";
-
-function readVersion(): string {
-  try {
-    const pkgPath = join(dirname(dirname(fileURLToPath(import.meta.url))), "package.json");
-    const pkg: unknown = JSON.parse(readFileSync(pkgPath, "utf8"));
-    if (pkg && typeof pkg === "object" && "version" in pkg && typeof pkg.version === "string") {
-      return pkg.version;
-    }
-  } catch {
-    // fall through
-  }
-  return "0.0.0";
-}
+import { readVersion } from "./version.js";
 
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<number> {
   const logger = createLogger();

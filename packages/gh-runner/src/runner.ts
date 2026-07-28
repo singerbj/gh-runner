@@ -17,6 +17,7 @@ import type { CommandRunner, ExecOptions, SpawnHook } from "./exec.js";
 import { fixLabelFor, fixLabels, proposeWorkflowFix } from "./fix.js";
 import type { WorkflowFixResult } from "./fix.js";
 import { GhClient } from "./gh.js";
+import { MarkerPublisher } from "./heartbeat.js";
 import { silentLogger } from "./logger.js";
 import type { Logger } from "./logger.js";
 import { promptMultiSelect } from "./menu.js";
@@ -327,6 +328,17 @@ export async function ghRunner(
     ...(context.fetchImpl ? { fetchImpl: context.fetchImpl } : {}),
   };
 
+  // Tells the workflows which labels are answerable right now. Jobs the fix PR
+  // repointed read these refs and fall back to their hosted runner without one.
+  const markers = new MarkerPublisher({
+    repo,
+    labels: [...new Set(plans.flatMap((plan) => plan.labels))],
+    gh,
+    cleanupGh,
+    logger,
+  });
+  await markers.start(await gh.defaultBranch(repo).catch(() => "main"));
+
   // Every runner gets to finish and clean up even if a sibling blows up.
   const settled = await Promise.allSettled(
     plans.map((plan) =>
@@ -334,7 +346,7 @@ export async function ghRunner(
         ? runDockerTarget({ ...shared, plan })
         : runNativeTarget({ ...shared, plan, runnerVersion: runnerVersion as string }),
     ),
-  );
+  ).finally(() => markers.stop());
 
   const runners: RunSummary[] = [];
   let failure: unknown;
@@ -723,19 +735,20 @@ function reportFix(logger: Logger, fix: WorkflowFixResult, plans: readonly Targe
       line(dim(`would change ${fix.files.join(", ")} on ${fix.branch}`));
       return;
     case "opened":
-      for (const { file, job, label } of fix.jobs) {
-        line(`${green("✓")} ${file} ${dim("→")} ${bold(job)} now wants ${label}`);
+      for (const { file, job, label, from } of fix.jobs) {
+        const fallback = from.length > 0 ? from.join(", ") : "its current runner";
+        line(`${green("✓")} ${file} ${dim("→")} ${bold(job)} prefers ${label}, else ${fallback}`);
       }
-      // A macOS job repointed from a Linux-only session would queue for a runner
-      // nobody has started. Say which one, and how to start it.
+      // A macOS job repointed from a Linux-only session keeps running — on
+      // GitHub. Say so, and how to bring it here instead.
       for (const label of fixLabels(fix.jobs)) {
         if (plans.some((plan) => plan.allLabels.includes(label))) continue;
         const os = osForLabel(label);
         line(
           `  ${dim(
             os
-              ? `no ${label} runner online here — start one with: gh-runner ${SHORT_NAME[os]}`
-              : `no ${label} runner online here — register one with: --labels ${label}`,
+              ? `no ${label} runner in this session — start one with: gh-runner ${SHORT_NAME[os]}`
+              : `no ${label} runner in this session — register one with: --labels ${label}`,
           )}`,
         );
       }

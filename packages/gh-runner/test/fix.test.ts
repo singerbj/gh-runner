@@ -129,9 +129,13 @@ describe("proposeWorkflowFix", () => {
       "show",
       `refs/remotes/origin/${result.branch}:.github/workflows/ci.yml`,
     );
-    expect(pushed).toContain("  build:\n    runs-on: [self-hosted, gh-runner-linux]");
+    // `build` prefers the runner, and keeps ubuntu-latest as its fallback.
+    expect(pushed).toContain(
+      "runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || 'ubuntu-latest' }}",
+    );
+    expect(pushed).toContain('"linux": { "labels": ["self-hosted","gh-runner-linux"]');
+    // `local` already asked for the runner directly; nothing to change.
     expect(pushed).toContain("  local:\n    runs-on: [self-hosted, gh-runner]");
-    expect(pushed).not.toContain("ubuntu-latest");
 
     const prCreate = ghCalls.find((args) => args.join(" ").includes("pr create"));
     expect(prCreate).toBeDefined();
@@ -159,10 +163,19 @@ describe("proposeWorkflowFix", () => {
       "show",
       `refs/remotes/origin/${result.branch}:.github/workflows/ci.yml`,
     );
-    expect(pushed).toContain("  mac:\n    runs-on: [self-hosted, gh-runner-mac]");
-    expect(pushed).toContain("  linux:\n    runs-on: [self-hosted, gh-runner-linux]");
-    expect(pushed).toContain("  windows:\n    runs-on: [self-hosted, gh-runner-windows]");
-    expect(pushed).toContain("  big:\n    runs-on: [self-hosted, gh-runner]");
+    // Each job prefers its own platform's label and falls back to the runner
+    // it named before.
+    for (const [key, fallback] of [
+      ["mac", "macos-14"],
+      ["linux", "ubuntu-latest"],
+      ["windows", "windows-2022"],
+      ["gh_runner", "our-beefy-box"],
+    ]) {
+      expect(pushed).toContain(
+        `runs-on: \${{ fromJSON(needs.gh-runner-check.outputs.runners).${key} || '${fallback}' }}`,
+      );
+    }
+    expect(pushed).toContain('"mac": { "labels": ["self-hosted","gh-runner-mac"]');
   });
 
   it("says which platform each job wants in the PR it opens", async () => {
@@ -173,9 +186,13 @@ describe("proposeWorkflowFix", () => {
     const body = create?.[create.indexOf("--body") + 1] ?? "";
     const title = create?.[create.indexOf("--title") + 1] ?? "";
 
-    expect(title).toBe("Run CI on self-hosted runners");
-    expect(body).toContain("`mac` in `.github/workflows/ci.yml` → `[self-hosted, gh-runner-mac]`");
-    expect(body).toContain("was `macos-14`");
+    expect(title).toBe("Use a self-hosted runner for 4 jobs when one is online");
+    expect(body).toContain(
+      "`mac` in `.github/workflows/ci.yml` → `[self-hosted, gh-runner-mac]`, else `macos-14`",
+    );
+    // The mechanism, and the fact that it needs no secret, belong in the body.
+    expect(body).toContain("refs/gh-runner/online/");
+    expect(body).toContain("contents: read");
   });
 
   it("refuses a label that would write something other than a runs-on", async () => {

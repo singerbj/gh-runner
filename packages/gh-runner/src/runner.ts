@@ -38,7 +38,7 @@ import { declineAll } from "./prompt.js";
 import type { Confirm } from "./prompt.js";
 import { availableTargets, parseTargetNames, planOptions, resolveTargets } from "./targets.js";
 import type { PlatformOption, ResolvedTarget } from "./targets.js";
-import { inspectWorkflows } from "./workflows.js";
+import { PROBE_JOB_ID, inspectWorkflows } from "./workflows.js";
 import type { WorkflowReport } from "./workflows.js";
 
 export interface RunContext {
@@ -277,6 +277,7 @@ export async function ghRunner(
       repoRoot,
       ...(options.fixLabel ? { label: options.fixLabel } : {}),
       jobs: options.fixJobs,
+      selfHostedProbe: options.selfHostedProbe,
       commandRunner,
       gh,
       logger,
@@ -336,6 +337,10 @@ export async function ghRunner(
     gh,
     cleanupGh,
     logger,
+    // Only where a probe job asks for it. The audit is the source of truth, but
+    // it doesn't see a fix opened moments ago — and `--no-workflow-check` skips
+    // it entirely — so the flag counts on its own.
+    probeVariable: options.selfHostedProbe || (workflows?.selfHostedProbe ?? false),
   });
   await markers.start(await gh.defaultBranch(repo).catch(() => "main"));
 
@@ -738,6 +743,13 @@ function reportFix(logger: Logger, fix: WorkflowFixResult, plans: readonly Targe
       for (const { file, job, label, from } of fix.jobs) {
         const fallback = from.length > 0 ? from.join(", ") : "its current runner";
         line(`${green("✓")} ${file} ${dim("→")} ${bold(job)} prefers ${label}, else ${fallback}`);
+      }
+      if (fix.selfHostedProbe) {
+        line(
+          `${green("✓")} ${bold(PROBE_JOB_ID)} runs here too ${dim(
+            `— nothing in those workflows needs a GitHub-hosted runner`,
+          )}`,
+        );
       }
       // A macOS job repointed from a Linux-only session keeps running — on
       // GitHub. Say so, and how to bring it here instead.

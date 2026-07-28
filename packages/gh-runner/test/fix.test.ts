@@ -3,6 +3,11 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  HOSTED_PROBE_RUNS_ON,
+  PROBE_RUNS_ON_VAR,
+  SELF_HOSTED_PROBE_RUNS_ON,
+} from "../src/constants.js";
 import { CliError } from "../src/errors.js";
 import { execCommand } from "../src/exec.js";
 import type { CommandRunner, ExecResult } from "../src/exec.js";
@@ -328,5 +333,73 @@ describe("proposeWorkflowFix", () => {
     git(checkout, "push", "--quiet", "origin", "main");
 
     expect((await propose()).status).toBe("no-changes");
+  });
+
+  it("pins the probe job to a hosted runner by default", async () => {
+    const result = await propose();
+    expect(result.status).toBe("opened");
+    if (result.status !== "opened") return;
+    expect(result.selfHostedProbe).toBe(false);
+
+    const pushed = git(
+      checkout,
+      "show",
+      `refs/remotes/origin/${result.branch}:.github/workflows/ci.yml`,
+    );
+    expect(pushed).toContain(`    runs-on: ${HOSTED_PROBE_RUNS_ON}\n`);
+    expect(pushed).not.toContain(PROBE_RUNS_ON_VAR);
+  });
+
+  it("lets the probe job run on the runner too, so nothing needs a hosted one", async () => {
+    const result = await propose({ selfHostedProbe: true });
+    expect(result.status).toBe("opened");
+    if (result.status !== "opened") return;
+    expect(result.selfHostedProbe).toBe(true);
+
+    const pushed = git(
+      checkout,
+      "show",
+      `refs/remotes/origin/${result.branch}:.github/workflows/ci.yml`,
+    );
+    expect(pushed).toContain(`    runs-on: ${SELF_HOSTED_PROBE_RUNS_ON}\n`);
+
+    // The repointed job is unaffected: it still reads the probe's output.
+    expect(pushed).toContain(
+      "runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || 'ubuntu-latest' }}",
+    );
+
+    const prCreate = ghCalls.find((args) => args.join(" ").includes("pr create"));
+    expect(prCreate?.join("\n")).toContain(PROBE_RUNS_ON_VAR);
+  });
+
+  it("moves an already-fixed repo's probe job over, with nothing left to repoint", async () => {
+    const first = await propose({ selfHostedProbe: false });
+    expect(first.status).toBe("opened");
+    if (first.status !== "opened") return;
+
+    // Land that fix on main and drop its branch, the way a merged PR would, so
+    // a second run has neither a hosted job to repoint nor a branch to refuse.
+    git(checkout, "fetch", "--quiet", "origin", first.branch);
+    git(checkout, "merge", "--quiet", "--ff-only", `origin/${first.branch}`);
+    git(checkout, "push", "--quiet", "origin", "main");
+    git(checkout, "push", "--quiet", "origin", "--delete", first.branch);
+
+    expect((await propose({ selfHostedProbe: false })).status).toBe("no-changes");
+
+    const moved = await propose({ selfHostedProbe: true });
+    expect(moved.status).toBe("opened");
+    if (moved.status !== "opened") return;
+    expect(moved.jobs).toEqual([]);
+
+    const pushed = git(
+      checkout,
+      "show",
+      `refs/remotes/origin/${moved.branch}:.github/workflows/ci.yml`,
+    );
+    expect(pushed).toContain(`    runs-on: ${SELF_HOSTED_PROBE_RUNS_ON}\n`);
+    // Only the probe job's own runner moved.
+    expect(pushed).toContain(
+      "runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || 'ubuntu-latest' }}",
+    );
   });
 });

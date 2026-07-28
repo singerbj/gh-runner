@@ -2,6 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { LineCounter, isMap, isScalar, isSeq, parseDocument } from "yaml";
 import type { Pair } from "yaml";
+import { HOSTED_PROBE_RUNS_ON, PROBE_RUNS_ON_VAR } from "./constants.js";
 import type { RunnerOs } from "./platform.js";
 
 export interface RunsOnTarget {
@@ -54,6 +55,11 @@ export interface WorkflowReport {
   unparsed: Array<{ file: string; message: string }>;
   /** Labels a near-miss job wants that this runner doesn't have. */
   suggestedLabels: string[];
+  /**
+   * True when a probe job in this repo picks its own runner from
+   * {@link PROBE_RUNS_ON_VAR}, so a session here should publish it.
+   */
+  selfHostedProbe: boolean;
 }
 
 export interface WorkflowParseResult {
@@ -68,6 +74,11 @@ const isExpression = (value: string): boolean => value.includes("${{");
 
 /** Job id of the probe job the fix inserts. */
 export const PROBE_JOB_ID = "gh-runner-check";
+
+/** True for a probe job that picks its own runner from the repo variable. */
+export function usesProbeVariable(target: RunsOnTarget): boolean {
+  return target.probe && (target.unresolved?.includes(PROBE_RUNS_ON_VAR) ?? false);
+}
 
 /** Path of the action the probe job runs, without the `owner/repo` or the ref. */
 export const PROBE_ACTION_PATH = "actions/pick-runner";
@@ -425,6 +436,7 @@ export async function inspectWorkflows(
       unknown: [],
       unparsed: [],
       suggestedLabels: [],
+      selfHostedProbe: false,
     };
   }
 
@@ -469,12 +481,14 @@ export async function inspectWorkflows(
     verdicts,
     matches: verdicts.filter((v) => v.kind === "match").map((v) => v.target),
     missing,
-    // The probe job is hosted on purpose, and fixing it would point it at the
-    // answer it is there to work out.
+    // The probe job picks its own runner, and repointing it would point it at
+    // the answer it is there to work out. That also keeps it out of `unknown`:
+    // its `runs-on` is an expression by design, not one we failed to read.
     hosted: verdicts.filter((v) => v.kind === "hosted" && !v.target.probe).map((v) => v.target),
-    unknown: verdicts.filter((v) => v.kind === "unknown").map((v) => v.target),
+    unknown: verdicts.filter((v) => v.kind === "unknown" && !v.target.probe).map((v) => v.target),
     unparsed,
     suggestedLabels,
+    selfHostedProbe: verdicts.some((v) => usesProbeVariable(v.target)),
   };
 }
 
@@ -493,6 +507,12 @@ export interface WorkflowFixPlan {
   /** `owner/repo/actions/pick-runner@ref`. */
   actionRef: string;
   fixes: readonly RunsOnFix[];
+  /**
+   * The probe job's own `runs-on`. Defaults to a GitHub-hosted runner, which
+   * always starts; {@link SELF_HOSTED_PROBE_RUNS_ON} keeps the whole workflow
+   * off hosted runners at the cost of trusting a variable with no expiry.
+   */
+  probeRunsOn?: string;
 }
 
 interface Edit {
@@ -572,6 +592,17 @@ function targetsBlock(entries: readonly string[], indent: number): string {
   ].join("\n");
 }
 
+/**
+ * The probe job's `runs-on:` line.
+ *
+ * Written as a plain scalar: the expression form carries both quote characters,
+ * and it has nothing in it — no leading indicator, no `: `, no ` #` — that
+ * makes YAML read it as anything but a string.
+ */
+function probeRunsOnLine(plan: WorkflowFixPlan): string {
+  return `runs-on: ${plan.probeRunsOn ?? HOSTED_PROBE_RUNS_ON}`;
+}
+
 /** The probe job, indented to sit alongside the jobs already in the file. */
 function probeJobText(plan: WorkflowFixPlan, indent: number, entries: readonly string[]): string {
   const pad = " ".repeat(indent);
@@ -580,7 +611,7 @@ function probeJobText(plan: WorkflowFixPlan, indent: number, entries: readonly s
   return [
     `${pad}${plan.jobId}:`,
     `${pad}${step}name: Pick runners`,
-    `${pad}${step}runs-on: ubuntu-latest`,
+    `${pad}${step}${probeRunsOnLine(plan)}`,
     `${pad}${step}permissions:`,
     `${pad}${step}${step}contents: read`,
     `${pad}${step}outputs:`,
@@ -682,7 +713,20 @@ interface ExistingProbe {
   jobId: string;
   /** Byte range of `targets: <value>`, so a rewrite can splice just that. */
   range: [number, number];
+  /** Byte range of the probe job's own `runs-on: <value>`, when it has one. */
+  runsOnRange: [number, number] | undefined;
+  /** The probe job's current `runs-on`, verbatim. */
+  runsOn: string | undefined;
   specs: Map<string, ProbeSpec>;
+}
+
+/** Byte range of a job's `runs-on: <value>`, trailing whitespace excluded. */
+function runsOnRange(source: string, jobNode: unknown): [number, number] | undefined {
+  const pair = pairFor(jobNode, "runs-on");
+  const keyRange = (pair?.key as { range?: [number, number, number] } | undefined)?.range;
+  const valueRange = (pair?.value as { range?: [number, number, number] } | undefined)?.range;
+  if (!keyRange || !valueRange) return undefined;
+  return [keyRange[0], trimEnd(source, keyRange[0], valueRange[1])];
 }
 
 /** The probe job a previous fix left in this file, if there is one. */
@@ -701,9 +745,12 @@ function findProbeJob(source: string, jobs: ReadonlyMap<string, unknown>): Exist
         ?.range;
       if (!keyRange || !valueRange || !isScalar(targets?.value)) continue;
 
+      const own = runsOnRange(source, jobNode);
       return {
         jobId,
         range: [keyRange[0], trimEnd(source, keyRange[0], valueRange[1])],
+        runsOnRange: own,
+        runsOn: own ? source.slice(own[0], own[1]) : undefined,
         specs: parseTargetSpecs(String(targets.value.value)),
       };
     }
@@ -719,10 +766,12 @@ function findProbeJob(source: string, jobs: ReadonlyMap<string, unknown>): Exist
  * Splices only the bytes it has to — the `runs-on` values, each job's `needs`,
  * and one insertion above the first job — so comments, formatting, and every
  * other line in the file survive untouched.
+ *
+ * With no jobs to repoint this still has work to do in a file that was fixed
+ * before: the probe job already there may pick its own runner differently to
+ * what this plan asks for.
  */
 export function applyWorkflowFix(source: string, plan: WorkflowFixPlan): string {
-  if (plan.fixes.length === 0) return source;
-
   const doc = parseDocument(source);
   const jobsNode = doc.get("jobs", true);
   if (!isMap(jobsNode)) return source;
@@ -735,6 +784,8 @@ export function applyWorkflowFix(source: string, plan: WorkflowFixPlan): string 
   // A file fixed once already has a probe job; a job added since then joins it
   // rather than getting a second one.
   const existing = findProbeJob(source, jobNodes);
+  if (plan.fixes.length === 0 && !existing) return source;
+
   const jobId = existing?.jobId ?? uniqueJobId(plan.jobId, jobNodes);
   const resolved: WorkflowFixPlan = { ...plan, jobId };
 
@@ -756,6 +807,14 @@ export function applyWorkflowFix(source: string, plan: WorkflowFixPlan): string 
       end: existing.range[1],
       text: targetsBlock(entries, columnOf(source, existing.range[0])),
     });
+
+    // A probe job written by an earlier run picks its runner the way that run
+    // was asked to, not the way this one was. Bring it in line, so re-running
+    // the fix is how you switch a repo between the two.
+    const wanted = probeRunsOnLine(resolved);
+    if (existing.runsOnRange && existing.runsOn !== wanted) {
+      edits.push({ start: existing.runsOnRange[0], end: existing.runsOnRange[1], text: wanted });
+    }
   } else {
     // The probe job goes in above the first job, so the file reads in the order
     // it runs. An empty `jobs:` map has no first job to anchor to; there is also

@@ -37,6 +37,11 @@ describe("parseArgs", () => {
     expect(options.cacheDir).toBe("/tmp/cache");
   });
 
+  it("keeps the probe job on a GitHub-hosted runner unless asked otherwise", () => {
+    expect(parseArgs([]).options.selfHostedProbe).toBe(false);
+    expect(parseArgs(["--self-hosted-probe"]).options.selfHostedProbe).toBe(true);
+  });
+
   it.each([["-h"], ["--help"]])("treats %s as help", (flag) => {
     expect(parseArgs([flag]).kind).toBe("help");
   });

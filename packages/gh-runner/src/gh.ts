@@ -400,6 +400,44 @@ export class GhClient {
     }
   }
 
+  /**
+   * Sets a repository Actions variable, creating it if it isn't there yet.
+   *
+   * Update first: a runner re-asserts the variable on every heartbeat, so all
+   * but the first call is an update, and PATCH-then-POST costs one request in
+   * the case that actually repeats.
+   */
+  async setVariable(repo: string, name: string, value: string): Promise<boolean> {
+    try {
+      await this.api(`repos/${repo}/actions/variables/${name}`, {
+        method: "PATCH",
+        fields: { name, value },
+      });
+      return true;
+    } catch {
+      // 404 means it doesn't exist yet.
+      try {
+        await this.api(`repos/${repo}/actions/variables`, {
+          method: "POST",
+          fields: { name, value },
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  /** Best effort — the variable only ever holds a runner label. */
+  async deleteVariable(repo: string, name: string): Promise<boolean> {
+    try {
+      await this.api(`repos/${repo}/actions/variables/${name}`, { method: "DELETE" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Best-effort: cleanup should never fail louder than the thing it cleans up. */
   async removeToken(repo: string): Promise<string | null> {
     try {

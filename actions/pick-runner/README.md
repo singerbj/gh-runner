@@ -75,4 +75,29 @@ runs-on: [self-hosted, gh-runner-linux]
 
 ## Cost
 
-One extra job per workflow run: a few seconds on a GitHub-hosted runner, one API call. If your hosted minutes are exhausted the probe can't run at all — and neither can the fallback it would have chosen.
+One extra job per workflow run: a few seconds on a GitHub-hosted runner, one API call.
+
+## Where the probe job itself runs
+
+`ubuntu-latest`, by default. It's the one job that has to start before any of the others can be scheduled, so it takes the runner that is always there.
+
+That default has a sharp edge. If GitHub-hosted runners aren't available to the repo at all — hosted minutes exhausted, a spending limit reached, a failed payment — this job can't start, so nothing downstream of it is scheduled either. A repo whose work would all have run for free on your own machine still ends up with a red workflow.
+
+`gh-runner --fix-workflows --self-hosted-probe` writes the probe job differently:
+
+```yaml
+gh-runner-check:
+  runs-on: ${{ vars.GH_RUNNER_PROBE_RUNS_ON && fromJSON(vars.GH_RUNNER_PROBE_RUNS_ON) || 'ubuntu-latest' }}
+```
+
+`gh-runner` sets the `GH_RUNNER_PROBE_RUNS_ON` repository variable to `["self-hosted","gh-runner"]` while a runner is online, re-asserts it on every heartbeat, and deletes it on exit. With one up, the probe job runs on your machine and the workflow needs no hosted runner at all; with none, the variable is gone and the job is back on `ubuntu-latest`.
+
+`vars` is the only context a runner can write to that `runs-on` can read — the probe job can't read its own output, which is the whole reason it exists.
+
+The trade is that a repository variable has no expiry, and the marker refs do. A runner killed hard enough to skip its cleanup — `kill -9`, a laptop losing power — leaves the variable set, and the probe job then queues until a runner is back. Deleting the variable is always safe and puts the next run back on `ubuntu-latest`:
+
+```
+gh variable delete GH_RUNNER_PROBE_RUNS_ON
+```
+
+Setting the variable needs admin on the repo, the same rights registering a runner already needs. If `gh` can't write it, the session says so once and carries on — the probe job stays hosted.

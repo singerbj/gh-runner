@@ -244,7 +244,20 @@ jobs:
           TARBALL: ${{ needs.build.outputs.tarball }}
         run: |
           set -o pipefail
-          npm publish "release-artifacts/$TARBALL" --provenance --access public 2>&1 | tee publish.log
+
+          # The ./ is load-bearing. npm only reads an argument as a path when it
+          # starts with ./, /, ~/ or a drive letter; anything else that looks
+          # like `a/b` is GitHub shorthand, so a bare relative path sends npm to
+          # ssh://git@github.com/release-artifacts/<tarball>.git and it fails
+          # with a publickey error that says nothing about the real problem.
+          tarball="./release-artifacts/$TARBALL"
+          if [ ! -f "$tarball" ]; then
+            echo "::error::$tarball is missing from the build artifact."
+            ls -la release-artifacts || true
+            exit 1
+          fi
+
+          npm publish "$tarball" --provenance --access public 2>&1 | tee publish.log
 
       # npm's failures here are accurate and unhelpful in equal measure, and the
       # 403 in particular has a non-obvious cause worth naming.
@@ -253,6 +266,11 @@ jobs:
         env:
           PACKAGE: ${{ needs.build.outputs.name }}
         run: |
+          if [ ! -f publish.log ]; then
+            echo "::error::the publish step failed before npm ran — see its log above."
+            exit 1
+          fi
+
           if grep -q "E403" publish.log; then
             echo "::error::npm refused the publish with 403 Forbidden."
             echo
@@ -274,6 +292,15 @@ jobs:
             echo
             echo "Also check the name is free and the account is allowed to publish"
             echo "it: https://www.npmjs.com/package/$PACKAGE"
+          elif grep -q "git@github.com\|ls-remote" publish.log; then
+            # npm read the tarball argument as a GitHub repo shorthand instead
+            # of a file. The ./ prefix in the publish step is what prevents it.
+            echo "::error::npm treated the tarball as a git dependency, not a file."
+            echo
+            echo "npm only reads an argument as a path when it starts with ./, /"
+            echo "or ~/. Check the publish step still passes ./release-artifacts/…"
+          else
+            echo "::error::npm publish failed for $PACKAGE — see publish.log above."
           fi
           exit 1
 

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   HOSTED_PROBE_RUNS_ON,
   PROBE_RUNS_ON_VAR,
+  SELF_HOSTED_ONLY_PROBE_RUNS_ON,
   SELF_HOSTED_PROBE_RUNS_ON,
 } from "../src/constants.js";
 import {
@@ -15,6 +16,7 @@ import {
   inspectWorkflows,
   parseRunsOn,
   parseWorkflow,
+  readProbeFallback,
   readRunsOnLabels,
   usesProbeVariable,
 } from "../src/workflows.js";
@@ -170,6 +172,30 @@ describe("readRunsOnLabels", () => {
   });
 });
 
+describe("readProbeFallback", () => {
+  const runsOn = (tail: string) =>
+    `\${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || ${tail} }}`;
+
+  it("reads both shapes the rewrite writes", () => {
+    expect(readProbeFallback(runsOn("'ubuntu-latest'"))).toEqual(["ubuntu-latest"]);
+    expect(readProbeFallback(runsOn(`fromJSON('["self-hosted","gh-runner-linux"]')`))).toEqual([
+      "self-hosted",
+      "gh-runner-linux",
+    ]);
+  });
+
+  it("unescapes the doubled quotes YAML expressions carry", () => {
+    expect(readProbeFallback(runsOn("'it''s-a-runner'"))).toEqual(["it's-a-runner"]);
+  });
+
+  it("returns null for anything it didn't write", () => {
+    expect(readProbeFallback(runsOn("github.event.inputs.runner"))).toBeNull();
+    expect(readProbeFallback(runsOn(`fromJSON('{"not":"a list"}')`))).toBeNull();
+    expect(readProbeFallback(runsOn("fromJSON('[oops')"))).toBeNull();
+    expect(readProbeFallback("${{ matrix.os }}")).toBeNull();
+  });
+});
+
 describe("classifyTarget", () => {
   const target = (labels: string[]): RunsOnTarget => ({
     file: "ci.yml",
@@ -253,7 +279,7 @@ describe("applyWorkflowFix", () => {
   const planFor = (
     source: string,
     only?: readonly string[],
-    probeRunsOn?: string,
+    extra: Partial<WorkflowFixPlan> = {},
   ): WorkflowFixPlan => ({
     jobId: PROBE_JOB_ID,
     actionRef: ACTION,
@@ -263,7 +289,7 @@ describe("applyWorkflowFix", () => {
         const os = hostedRunnerOs(target.labels) ?? "linux";
         return { target, key: KEYS[os], labels: ["self-hosted", LABELS[os]] };
       }),
-    ...(probeRunsOn ? { probeRunsOn } : {}),
+    ...extra,
   });
 
   it("prefers each platform's own runner and keeps the hosted one as the fallback", () => {
@@ -406,7 +432,10 @@ describe("applyWorkflowFix", () => {
 
   it("lets the probe job pick its own runner from the variable", () => {
     const source = ["jobs:", "  a:", "    runs-on: ubuntu-latest"].join("\n");
-    const fixed = applyWorkflowFix(source, planFor(source, undefined, SELF_HOSTED_PROBE_RUNS_ON));
+    const fixed = applyWorkflowFix(
+      source,
+      planFor(source, undefined, { probeRunsOn: SELF_HOSTED_PROBE_RUNS_ON }),
+    );
 
     expect(fixed).toContain(`    runs-on: ${SELF_HOSTED_PROBE_RUNS_ON}\n`);
 
@@ -425,7 +454,10 @@ describe("applyWorkflowFix", () => {
 
     // A second job, and this time the probe is asked to run here too.
     const grown = `${hosted}\n  mac:\n    runs-on: macos-14\n`;
-    const moved = applyWorkflowFix(grown, planFor(grown, ["mac"], SELF_HOSTED_PROBE_RUNS_ON));
+    const moved = applyWorkflowFix(
+      grown,
+      planFor(grown, ["mac"], { probeRunsOn: SELF_HOSTED_PROBE_RUNS_ON }),
+    );
 
     expect(moved).toContain(`    runs-on: ${SELF_HOSTED_PROBE_RUNS_ON}\n`);
     expect(moved.match(/gh-runner-check:/g)).toHaveLength(1);
@@ -435,6 +467,112 @@ describe("applyWorkflowFix", () => {
     const back = applyWorkflowFix(moved, { ...planFor(moved, []), fixes: [] });
     expect(back).toContain(`    runs-on: ${HOSTED_PROBE_RUNS_ON}\n`);
     expect(back).not.toContain(PROBE_RUNS_ON_VAR);
+  });
+
+  describe("with noHostedFallback", () => {
+    const NO_HOSTED = {
+      probeRunsOn: SELF_HOSTED_ONLY_PROBE_RUNS_ON,
+      noHostedFallback: true,
+    } as const;
+
+    /**
+     * The invariant this mode exists for: no job can be scheduled onto a
+     * GitHub-hosted runner. That is a claim about `runs-on` and about the
+     * fallbacks the probe resolves — not about the file's bytes, which still
+     * carry the replaced runner under `"hosted"` so a later run can restore it.
+     */
+    const expectNothingHosted = (yaml: string) => {
+      const scheduled = [
+        ...yaml.split("\n").filter((line) => line.trim().startsWith("runs-on:")),
+        ...(yaml.match(/"fallback": [^,}]+/g) ?? []),
+      ].join("\n");
+      expect(scheduled).not.toMatch(/ubuntu|macos|windows/i);
+    };
+
+    it("names no GitHub-hosted runner anywhere", () => {
+      const source = [
+        "jobs:",
+        "  mac:",
+        "    runs-on: macos-14",
+        "  linux:",
+        "    runs-on: ubuntu-latest",
+      ].join("\n");
+      const fixed = applyWorkflowFix(source, planFor(source, undefined, NO_HOSTED));
+
+      // Both halves of the rewrite agree: the `||` and the probe's own spec.
+      expect(fixed).toContain(
+        "runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || " +
+          'fromJSON(\'["self-hosted","gh-runner-linux"]\') }}',
+      );
+      expect(fixed).toContain('"fallback": ["self-hosted","gh-runner-linux"]');
+      expect(fixed).toContain(`    runs-on: ${SELF_HOSTED_ONLY_PROBE_RUNS_ON}\n`);
+
+      expect(parseWorkflow(fixed, "ci.yml").error).toBeUndefined();
+      // The whole point: nothing left for GitHub to bill, or to refuse to start.
+      expectNothingHosted(fixed);
+      expect(fixed).not.toContain(PROBE_RUNS_ON_VAR);
+    });
+
+    it("records the runner it replaced, so the fallback can be put back", () => {
+      const source = ["jobs:", "  a:", "    runs-on: ubuntu-22.04"].join("\n");
+      const queued = applyWorkflowFix(source, planFor(source, undefined, NO_HOSTED));
+      expect(queued).toContain('"hosted": "ubuntu-22.04"');
+
+      const restored = applyWorkflowFix(queued, { ...planFor(queued, []), fixes: [] });
+      expect(restored).toContain(
+        "runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || 'ubuntu-22.04' }}",
+      );
+      expect(restored).toContain('"fallback": "ubuntu-22.04"');
+      expect(restored).not.toContain('"hosted"');
+      expect(restored).toContain(`    runs-on: ${HOSTED_PROBE_RUNS_ON}\n`);
+    });
+
+    it("converts jobs an earlier run repointed, not just the probe", () => {
+      const source = [
+        "jobs:",
+        "  a:",
+        "    runs-on: ubuntu-latest",
+        "  mac:",
+        "    runs-on: macos-14",
+      ].join("\n");
+      // Fixed once the ordinary way, so both jobs already read the probe.
+      const withFallbacks = applyWorkflowFix(source, planFor(source));
+      expect(withFallbacks).toContain("|| 'ubuntu-latest' }}");
+
+      // Re-run with the flag: nothing left to repoint, everything to convert.
+      const queued = applyWorkflowFix(withFallbacks, {
+        ...planFor(withFallbacks, []),
+        fixes: [],
+        ...NO_HOSTED,
+      });
+
+      expectNothingHosted(queued);
+      expect(queued).toContain('|| fromJSON(\'["self-hosted","gh-runner-linux"]\') }}');
+      expect(queued).toContain('|| fromJSON(\'["self-hosted","gh-runner-mac"]\') }}');
+      expect(queued.match(/gh-runner-check:/g)).toHaveLength(1);
+      expect(parseWorkflow(queued, "ci.yml").error).toBeUndefined();
+    });
+
+    it("leaves a hand-edited fallback alone rather than guessing at it", () => {
+      const source = ["jobs:", "  a:", "    runs-on: ubuntu-latest"].join("\n");
+      const fixed = applyWorkflowFix(source, planFor(source));
+      const edited = fixed.replace("|| 'ubuntu-latest' }}", "|| github.event.inputs.runner }}");
+
+      const queued = applyWorkflowFix(edited, {
+        ...planFor(edited, []),
+        fixes: [],
+        ...NO_HOSTED,
+      });
+      expect(queued).toContain("|| github.event.inputs.runner }}");
+    });
+
+    it("re-run with the same plan changes nothing", () => {
+      const source = ["jobs:", "  a:", "    runs-on: ubuntu-latest"].join("\n");
+      const queued = applyWorkflowFix(source, planFor(source, undefined, NO_HOSTED));
+      expect(applyWorkflowFix(queued, { ...planFor(queued, []), fixes: [], ...NO_HOSTED })).toBe(
+        queued,
+      );
+    });
   });
 
   it("is a no-op with nothing to repoint and no probe job to bring in line", () => {

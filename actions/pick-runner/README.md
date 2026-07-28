@@ -67,6 +67,14 @@ A step that decides where everything else runs must never be the reason a build 
 
 The `runs-on` this writes carries its own `|| 'ubuntu-latest'` as well, so even an empty `runners` output lands the job on the runner it had before.
 
+**Unless you asked it not to.** `gh-runner --fix-workflows --no-hosted-fallback` sets each target's `fallback` to its own `labels`, so an offline platform resolves to a `runs-on` only a self-hosted runner can answer and the job queues instead:
+
+```jsonc
+"linux": { "labels": ["self-hosted","gh-runner-linux"], "fallback": ["self-hosted","gh-runner-linux"], "hosted": "ubuntu-latest" }
+```
+
+That fails _closed_, which is the point: for a repo that can't start a hosted runner at all, falling back to one is the same failure with an extra step. `hosted` records the runner the fallback replaced so the change can be undone; this action ignores it.
+
 What it deliberately does **not** do is guarantee your machine gets the job. A runner can go offline in the seconds between the probe and the job starting, in which case that job queues like any other self-hosted job. If a job must never run anywhere but your hardware, ask for the labels directly:
 
 ```yaml
@@ -101,3 +109,12 @@ gh variable delete GH_RUNNER_PROBE_RUNS_ON
 ```
 
 Setting the variable needs admin on the repo, the same rights registering a runner already needs. If `gh` can't write it, the session says so once and carries on — the probe job stays hosted.
+
+`--no-hosted-fallback` goes one step further and drops the variable too, because with hosted runners off the table there is nothing left to choose between:
+
+```yaml
+gh-runner-check:
+  runs-on: [self-hosted, gh-runner]
+```
+
+The probe job then queues like any other job, needs no admin rights, and cannot be affected by a stale variable.

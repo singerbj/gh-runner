@@ -42,6 +42,15 @@ export interface RunnerOptions {
    */
   selfHostedProbe: boolean;
   /**
+   * Never name a GitHub-hosted runner in the workflows the fix PR rewrites, so
+   * a job queues for a self-hosted runner instead of falling back.
+   *
+   * Off by default, and implies {@link selfHostedProbe}. For a repo that can't
+   * start hosted runners at all, falling back to one is the same failure with an
+   * extra step; for every other repo it is the safety net worth keeping.
+   */
+  noHostedFallback: boolean;
+  /**
    * Platforms to serve, as given on the command line. Empty means "ask", or
    * "just this machine" when there's no terminal to ask on.
    */
@@ -109,6 +118,12 @@ OPTIONS
                          unavailable to the repo — a spending limit, a failed
                          payment. A runner that exits without cleaning up leaves the
                          probe job queued until one is back.
+  --no-hosted-fallback   Leave no GitHub-hosted runner named anywhere in the fix PR.
+                         Every job asks for a self-hosted runner and queues until
+                         one is up, instead of falling back. Implies
+                         --self-hosted-probe. For repos where hosted runners are
+                         unavailable, not merely unwanted: CI cannot run without
+                         someone hosting a runner.
   -h, --help             Show this help
   -v, --version          Show the gh-runner version
 
@@ -135,6 +150,7 @@ export function emptyOptions(): RunnerOptions {
     fixJobs: [],
     fixLabel: undefined,
     selfHostedProbe: false,
+    noHostedFallback: false,
     platforms: [],
     all: false,
     dockerImage: undefined,
@@ -250,6 +266,12 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         i += 1;
         break;
       case "--self-hosted-probe":
+        options.selfHostedProbe = true;
+        break;
+      case "--no-hosted-fallback":
+        options.noHostedFallback = true;
+        // The probe job gates every other one, so leaving it hosted would fail
+        // the workflow before a single fallback below it could matter.
         options.selfHostedProbe = true;
         break;
       case "--all":

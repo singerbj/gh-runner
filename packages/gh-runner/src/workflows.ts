@@ -87,8 +87,18 @@ export const PROBE_ACTION_PATH = "actions/pick-runner";
 export interface ProbeSpec {
   /** Labels to use when a runner carrying them is online. */
   labels: string[];
-  /** The runner to use when none is — the job's original `runs-on`. */
+  /** The runner to use when none is. Normally the job's original `runs-on`. */
   fallback: string[];
+  /**
+   * The job's original `runs-on`, recorded only when `fallback` no longer holds
+   * it — that is, under `--no-hosted-fallback`, which replaces the fallback with
+   * the labels themselves.
+   *
+   * Overwriting `fallback` in place would otherwise throw away the one record of
+   * where the job ran before it was ever repointed, and with it any way back.
+   * The action ignores this field; it exists so a later run can restore it.
+   */
+  hosted?: string[];
 }
 
 /**
@@ -106,6 +116,41 @@ export function readProbeExpression(value: string): { jobId: string; key: string
   const match = PROBE_EXPRESSION.exec(value);
   if (!match?.[1] || !match[2]) return null;
   return { jobId: match[1], key: match[2] };
+}
+
+/**
+ * The `|| ...` a generated `runs-on` falls through to — `'ubuntu-latest'` or
+ * `fromJSON('["self-hosted","gh-runner-linux"]')` — as a label list.
+ *
+ * Null when the tail isn't one of those two shapes, which is how a hand-edited
+ * expression stays hand-edited: a rewrite that can't read what is there now
+ * leaves it alone rather than overwriting it with a guess.
+ */
+const PROBE_FALLBACK = /\|\|\s*(?:fromJSON\(\s*'((?:[^']|'')*)'\s*\)|'((?:[^']|'')*)')\s*\}\}/;
+
+export function readProbeFallback(value: string): string[] | null {
+  const match = PROBE_FALLBACK.exec(value);
+  if (!match) return null;
+
+  const [, json, scalar] = match;
+  if (scalar !== undefined) return [scalar.replaceAll("''", "'")];
+  if (json === undefined) return null;
+
+  try {
+    const parsed: unknown = JSON.parse(json.replaceAll("''", "'"));
+    return Array.isArray(parsed) && parsed.every((entry) => typeof entry === "string")
+      ? (parsed as string[])
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Label lists GitHub would treat as the same request. */
+function sameLabels(a: readonly string[], b: readonly string[]): boolean {
+  return (
+    a.length === b.length && a.every((label, i) => label.toLowerCase() === b[i]?.toLowerCase())
+  );
 }
 
 /**
@@ -164,19 +209,24 @@ export function parseTargetSpecs(raw: string): Map<string, ProbeSpec> {
     const labels = (spec as { labels?: unknown }).labels;
     if (!Array.isArray(labels) || labels.some((label) => typeof label !== "string")) continue;
 
-    const fallback = (spec as { fallback?: unknown }).fallback;
+    const hosted = readLabelList((spec as { hosted?: unknown }).hosted);
     specs.set(key, {
       labels: labels as string[],
-      fallback:
-        typeof fallback === "string"
-          ? [fallback]
-          : Array.isArray(fallback)
-            ? fallback.filter((entry): entry is string => typeof entry === "string")
-            : [],
+      fallback: readLabelList((spec as { fallback?: unknown }).fallback),
+      ...(hosted.length > 0 ? { hosted } : {}),
     });
   }
 
   return specs;
+}
+
+/** A `runs-on` in the spec JSON, which is a bare string or a list of them. */
+function readLabelList(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) {
+    return value.filter((entry): entry is string => typeof entry === "string");
+  }
+  return [];
 }
 
 /**
@@ -513,6 +563,16 @@ export interface WorkflowFixPlan {
    * off hosted runners at the cost of trusting a variable with no expiry.
    */
   probeRunsOn?: string;
+  /**
+   * Never name a GitHub-hosted runner: every job falls back to the self-hosted
+   * labels it prefers, so it queues until a runner is up instead of resolving to
+   * a runner the repo may not be able to start at all.
+   *
+   * For a repo whose hosted runners are unavailable — a spending limit, a failed
+   * payment — falling back to one is not a safety net, because the fallback
+   * can't start either.
+   */
+  noHostedFallback?: boolean;
 }
 
 interface Edit {
@@ -542,40 +602,71 @@ function pairFor(node: unknown, key: string): Pair | undefined {
  * The `runs-on` a repointed job asks for.
  *
  * The `||` matters: if the probe job produced nothing — a broken input, an API
- * the token couldn't read — the expression falls through to the runner this job
- * used before, instead of resolving to null and failing the run outright.
+ * the token couldn't read — the expression falls through rather than resolving
+ * to null and failing the run outright. Where it falls through *to* is the
+ * plan's fallback mode: the runner the job used before, or, with
+ * `noHostedFallback`, the self-hosted labels it would rather queue for.
  */
-function runsOnExpression(plan: WorkflowFixPlan, fix: RunsOnFix): string {
-  const original = fix.target.labels;
-  const fallback =
-    original.length === 1
-      ? `'${original[0]}'`
-      : `fromJSON('${JSON.stringify(original).replaceAll("'", "''")}')`;
+function runsOnExpression(jobId: string, key: string, fallback: readonly string[]): string {
+  const quoted = (value: string) => `'${value.replaceAll("'", "''")}'`;
+  const value =
+    fallback.length === 1
+      ? quoted(fallback[0] as string)
+      : `fromJSON(${quoted(JSON.stringify(fallback))})`;
 
-  return `runs-on: \${{ fromJSON(needs.${plan.jobId}.outputs.runners).${fix.key} || ${fallback} }}`;
+  return `runs-on: \${{ fromJSON(needs.${jobId}.outputs.runners).${key} || ${value} }}`;
+}
+
+/**
+ * Every platform the probe job resolves after this plan is applied — the specs
+ * already in the file, plus one per newly repointed job, with each fallback set
+ * to what the plan's mode asks for.
+ *
+ * Built once and used for both halves of the rewrite, so a job's `||` and the
+ * probe's `targets` can't disagree about where that job goes when nothing is
+ * online.
+ */
+function planSpecs(
+  plan: WorkflowFixPlan,
+  existing: ReadonlyMap<string, ProbeSpec>,
+): Map<string, ProbeSpec> {
+  const merged = new Map<string, ProbeSpec>(existing);
+  for (const fix of plan.fixes) {
+    if (merged.has(fix.key)) continue;
+    merged.set(fix.key, { labels: fix.labels, fallback: fix.target.labels });
+  }
+
+  const specs = new Map<string, ProbeSpec>();
+  for (const [key, spec] of merged) {
+    // Wherever it is recorded, `hosted` is where this job ran before any of
+    // this — the fallback until a run replaced it, and the way back after.
+    const hosted = spec.hosted ?? spec.fallback;
+    specs.set(key, {
+      labels: spec.labels,
+      fallback: plan.noHostedFallback ? spec.labels : hosted,
+      ...(plan.noHostedFallback ? { hosted } : {}),
+    });
+  }
+
+  return specs;
 }
 
 /** Written as-is into the probe job; kept out of the template literals below. */
 const PROBE_OUTPUT_EXPRESSION = "${{ steps.pick.outputs.runners }}";
 
 /** One `"key": { "labels": [...], "fallback": ... }` line per platform. */
-function targetEntries(
-  fixes: readonly RunsOnFix[],
-  existing: ReadonlyMap<string, ProbeSpec>,
-): string[] {
-  const specs = new Map<string, ProbeSpec>(existing);
-
-  for (const fix of fixes) {
-    if (specs.has(fix.key)) continue;
-    specs.set(fix.key, { labels: fix.labels, fallback: fix.target.labels });
-  }
+function targetEntries(specs: ReadonlyMap<string, ProbeSpec>): string[] {
+  // A single label is written as a bare string, the way someone would have
+  // written the `runs-on` it came from.
+  const one = (labels: readonly string[]) => (labels.length === 1 ? labels[0] : labels);
 
   return [...specs].map(([key, spec]) => {
-    const fallback = spec.fallback.length === 1 ? spec.fallback[0] : spec.fallback;
-    return (
-      `${JSON.stringify(key)}: { "labels": ${JSON.stringify(spec.labels)}, ` +
-      `"fallback": ${JSON.stringify(fallback)} }`
-    );
+    const fields = [
+      `"labels": ${JSON.stringify(spec.labels)}`,
+      `"fallback": ${JSON.stringify(one(spec.fallback))}`,
+      ...(spec.hosted ? [`"hosted": ${JSON.stringify(one(spec.hosted))}`] : []),
+    ];
+    return `${JSON.stringify(key)}: { ${fields.join(", ")} }`;
   });
 }
 
@@ -789,17 +880,53 @@ export function applyWorkflowFix(source: string, plan: WorkflowFixPlan): string 
   const jobId = existing?.jobId ?? uniqueJobId(plan.jobId, jobNodes);
   const resolved: WorkflowFixPlan = { ...plan, jobId };
 
+  const specs = planSpecs(resolved, existing?.specs ?? new Map());
+  const fallbackFor = (key: string, target: RunsOnTarget) =>
+    specs.get(key)?.fallback ?? target.labels;
+
   const edits: Edit[] = [];
 
   for (const fix of resolved.fixes) {
     const [start, end] = fix.target.range;
-    edits.push({ start, end, text: runsOnExpression(resolved, fix) });
+    edits.push({
+      start,
+      end,
+      text: runsOnExpression(jobId, fix.key, fallbackFor(fix.key, fix.target)),
+    });
 
     const needs = needsEdit(source, jobNodes.get(fix.target.job), jobId, start);
     if (needs) edits.push(needs);
   }
 
-  const entries = targetEntries(resolved.fixes, existing?.specs ?? new Map());
+  // Jobs an earlier run already repointed. Their labels are right and their
+  // `needs` is wired up; what this plan can still disagree with is where they
+  // fall through to when nothing is online, which is the half of the rewrite
+  // the fallback mode decides. Without this, switching a repo that was fixed
+  // once would move the probe job and leave every other job pointed at a
+  // hosted runner.
+  const repointed = new Set(resolved.fixes.map((fix) => fix.target.job));
+  for (const [job, node] of jobNodes) {
+    if (job === jobId || repointed.has(job)) continue;
+
+    const range = runsOnRange(source, node);
+    if (!range) continue;
+
+    const text = source.slice(range[0], range[1]);
+    const probe = readProbeExpression(text);
+    if (!probe || probe.jobId !== jobId) continue;
+
+    const spec = specs.get(probe.key);
+    const current = readProbeFallback(text);
+    if (!spec || !current || sameLabels(current, spec.fallback)) continue;
+
+    edits.push({
+      start: range[0],
+      end: range[1],
+      text: runsOnExpression(jobId, probe.key, spec.fallback),
+    });
+  }
+
+  const entries = targetEntries(specs);
 
   if (existing) {
     edits.push({

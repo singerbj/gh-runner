@@ -63,6 +63,43 @@ export function actionRef(version: string, sha?: string | null): string {
   return sha ? `${base}@${sha} # ${tag}` : `${base}@${tag}`;
 }
 
+/**
+ * Repository variable a live runner sets so the probe job itself can skip
+ * GitHub-hosted runners.
+ *
+ * `runs-on` is resolved before any job starts, so it can't read the probe's
+ * output — `needs` is what the probe exists to feed. `vars` is the one context
+ * a runner can write to that `runs-on` can read, which makes this the only way
+ * to keep a rewritten workflow off hosted runners entirely.
+ */
+export const PROBE_RUNS_ON_VAR = "GH_RUNNER_PROBE_RUNS_ON";
+
+/**
+ * What that variable holds while a runner is up.
+ *
+ * Always this exact value, whichever platform published it: every runner
+ * registers {@link DEFAULT_LABEL}, so any of them can answer the probe job —
+ * all it does is read refs. A constant also makes two sessions agree, so
+ * publishing is idempotent and cleanup can't clobber a sibling's value.
+ */
+export const PROBE_RUNS_ON_VALUE = JSON.stringify(["self-hosted", DEFAULT_LABEL]);
+
+/** The probe job's `runs-on` before this option existed, and without it. */
+export const HOSTED_PROBE_RUNS_ON = "ubuntu-latest";
+
+/**
+ * The probe job's `runs-on` with the self-hosted probe on: the variable when a
+ * runner published one, and the hosted runner when none did.
+ *
+ * A variable has no expiry — unlike the marker refs, which age out — so a
+ * runner killed hard enough to skip its cleanup leaves this set and the probe
+ * job queues until a runner comes back. That is the trade this option makes,
+ * and why it is opt-in.
+ */
+export const SELF_HOSTED_PROBE_RUNS_ON =
+  `\${{ vars.${PROBE_RUNS_ON_VAR} && fromJSON(vars.${PROBE_RUNS_ON_VAR}) ` +
+  `|| '${HOSTED_PROBE_RUNS_ON}' }}`;
+
 /** The key a job reads out of the probe job's output — `linux`, `mac`, `windows`. */
 export const OS_KEYS: Readonly<Record<RunnerOs, string>> = {
   osx: "mac",

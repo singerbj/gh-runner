@@ -34,6 +34,14 @@ export interface RunnerOptions {
    */
   fixLabel: string | undefined;
   /**
+   * Let the probe job the fix writes run on a self-hosted runner too, and
+   * publish the repository variable it picks that up from.
+   *
+   * Off by default: it trades a job that always starts for one that can queue
+   * behind a runner that went away without cleaning up.
+   */
+  selfHostedProbe: boolean;
+  /**
    * Platforms to serve, as given on the command line. Empty means "ask", or
    * "just this machine" when there's no terminal to ask on.
    */
@@ -96,6 +104,11 @@ OPTIONS
                          (default: the label for the OS each job already used —
                          ${OS_LABELS.osx} for macos-*, ${OS_LABELS.linux} for ubuntu-*,
                          ${OS_LABELS.win} for windows-*, ${DEFAULT_LABEL} otherwise)
+  --self-hosted-probe    Let the fix PR's probe job run here too, instead of always
+                         on a GitHub-hosted runner. Needed when hosted runners are
+                         unavailable to the repo — a spending limit, a failed
+                         payment. A runner that exits without cleaning up leaves the
+                         probe job queued until one is back.
   -h, --help             Show this help
   -v, --version          Show the gh-runner version
 
@@ -121,6 +134,7 @@ export function emptyOptions(): RunnerOptions {
     fixWorkflows: "ask",
     fixJobs: [],
     fixLabel: undefined,
+    selfHostedProbe: false,
     platforms: [],
     all: false,
     dockerImage: undefined,
@@ -234,6 +248,9 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       case "--fix-label":
         options.fixLabel = assertLabel("--fix-label", requireValue("--fix-label", argv[i + 1]));
         i += 1;
+        break;
+      case "--self-hosted-probe":
+        options.selfHostedProbe = true;
         break;
       case "--all":
         options.all = true;

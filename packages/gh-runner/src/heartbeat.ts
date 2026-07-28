@@ -1,3 +1,4 @@
+import { PROBE_RUNS_ON_VALUE, PROBE_RUNS_ON_VAR } from "./constants.js";
 import type { GhClient } from "./gh.js";
 import type { Logger } from "./logger.js";
 import { HEARTBEAT_INTERVAL_MS, markerRef } from "./markers.js";
@@ -10,6 +11,12 @@ export interface MarkerPublisherOptions {
   /** A client that outlives an abort, so the markers still come down on Ctrl+C. */
   cleanupGh: GhClient;
   logger: Logger;
+  /**
+   * Also publish {@link PROBE_RUNS_ON_VAR}, so a workflow whose probe job reads
+   * it runs that job here instead of on a GitHub-hosted runner. Off unless the
+   * repo's workflows actually ask for it.
+   */
+  probeVariable?: boolean;
   /** Injected in tests; defaults to `Date.now`. */
   now?: () => number;
   intervalMs?: number;
@@ -37,6 +44,9 @@ export class MarkerPublisher {
   private timer: { close: () => void } | undefined;
   private sha: string | undefined;
   private warned = false;
+  /** True once the probe variable is up, so `stop` knows to take it down. */
+  private variablePublished = false;
+  private variableWarned = false;
 
   constructor(options: MarkerPublisherOptions) {
     this.options = options;
@@ -103,7 +113,36 @@ export class MarkerPublisher {
       if (!fresh.has(ref)) await gh.deleteRef(repo, ref);
     }
 
+    await this.publishVariable();
+
     return true;
+  }
+
+  /**
+   * Re-asserts the probe variable on every beat rather than setting it once.
+   *
+   * Two sessions can overlap, and the one that stops first takes the variable
+   * down; re-publishing puts it back within a heartbeat instead of leaving the
+   * survivor's probe job on a hosted runner for the rest of the day.
+   */
+  private async publishVariable(): Promise<void> {
+    if (!this.options.probeVariable) return;
+
+    const { repo, gh } = this.options;
+    if (await gh.setVariable(repo, PROBE_RUNS_ON_VAR, PROBE_RUNS_ON_VALUE)) {
+      this.variablePublished = true;
+      return;
+    }
+
+    // Variables need admin on the repo — the same rights a registration token
+    // already needed, so this is usually a token scope rather than a permission.
+    if (this.variableWarned) return;
+    this.variableWarned = true;
+    this.options.logger.raw(
+      `    ${this.options.logger.styles.dim(
+        `! couldn't set ${PROBE_RUNS_ON_VAR} — the probe job will use a GitHub-hosted runner`,
+      )}\n`,
+    );
   }
 
   /** Takes every marker down. Safe to call twice, and after an abort. */
@@ -116,6 +155,13 @@ export class MarkerPublisher {
 
     for (const ref of refs) {
       await this.options.cleanupGh.deleteRef(this.options.repo, ref);
+    }
+
+    // Before the markers would have aged out, because nothing ages this one
+    // out: a probe job that still believes in this machine waits for it.
+    if (this.variablePublished) {
+      this.variablePublished = false;
+      await this.options.cleanupGh.deleteVariable(this.options.repo, PROBE_RUNS_ON_VAR);
     }
   }
 

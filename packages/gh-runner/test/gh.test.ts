@@ -173,3 +173,47 @@ describe("GhClient tokens and versions", () => {
     await expect(new GhClient({ runner }).removeToken("a/b")).resolves.toBeNull();
   });
 });
+
+describe("GhClient variables", () => {
+  it("updates first, so the call a heartbeat repeats costs one request", async () => {
+    const { runner, calls } = fakeRunner({
+      "actions/variables/GH_RUNNER_PROBE_RUNS_ON": okResult(""),
+    });
+    await expect(
+      new GhClient({ runner }).setVariable("a/b", "GH_RUNNER_PROBE_RUNS_ON", "[]"),
+    ).resolves.toBe(true);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args).toEqual([
+      "api",
+      "-X",
+      "PATCH",
+      "repos/a/b/actions/variables/GH_RUNNER_PROBE_RUNS_ON",
+      "-f",
+      "name=GH_RUNNER_PROBE_RUNS_ON",
+      "-f",
+      "value=[]",
+    ]);
+  });
+
+  it("creates the variable when there isn't one to update", async () => {
+    const { runner, calls } = fakeRunner(
+      { "-X POST repos/a/b/actions/variables": okResult("") },
+      errResult,
+    );
+    await expect(new GhClient({ runner }).setVariable("a/b", "V", "x")).resolves.toBe(true);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("reports failure rather than throwing when neither call lands", async () => {
+    const { runner } = fakeRunner({}, errResult);
+    await expect(new GhClient({ runner }).setVariable("a/b", "V", "x")).resolves.toBe(false);
+    await expect(new GhClient({ runner }).deleteVariable("a/b", "V")).resolves.toBe(false);
+  });
+
+  it("deletes by name", async () => {
+    const { runner, calls } = fakeRunner({ "actions/variables/V": okResult("") });
+    await expect(new GhClient({ runner }).deleteVariable("a/b", "V")).resolves.toBe(true);
+    expect(calls[0]?.args).toEqual(["api", "-X", "DELETE", "repos/a/b/actions/variables/V"]);
+  });
+});

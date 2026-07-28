@@ -7,6 +7,9 @@ import {
   ACTION_REPO,
   DEFAULT_LABEL,
   FIX_BRANCH_PREFIX,
+  HOSTED_PROBE_RUNS_ON,
+  PROBE_RUNS_ON_VAR,
+  SELF_HOSTED_PROBE_RUNS_ON,
   actionRef,
   osLabel,
   probeKey,
@@ -19,7 +22,13 @@ import type { Logger } from "./logger.js";
 import { MARKER_MAX_AGE_SECONDS } from "./markers.js";
 import { assertLabel } from "./options.js";
 import { readVersion } from "./version.js";
-import { PROBE_JOB_ID, applyWorkflowFix, hostedRunnerOs, inspectWorkflows } from "./workflows.js";
+import {
+  PROBE_JOB_ID,
+  applyWorkflowFix,
+  hostedRunnerOs,
+  inspectWorkflows,
+  usesProbeVariable,
+} from "./workflows.js";
 import type { RunsOnFix, RunsOnTarget } from "./workflows.js";
 
 /**
@@ -47,6 +56,13 @@ export interface WorkflowFixOptions {
   label?: string | undefined;
   /** Restrict the rewrite to these job ids. Empty means every hosted job. */
   jobs?: readonly string[];
+  /**
+   * Let the probe job run on a self-hosted runner too, by reading
+   * {@link PROBE_RUNS_ON_VAR}. Off by default: the probe job is the one job
+   * that has to start for the rest to be scheduled at all, so it takes the
+   * runner that is always there unless asked otherwise.
+   */
+  selfHostedProbe?: boolean;
   /** Overrides the generated branch name. Used verbatim, suffix and all. */
   branch?: string;
   commandRunner: CommandRunner;
@@ -77,6 +93,8 @@ export type WorkflowFixResult =
       url: string | null;
       files: string[];
       jobs: FixedJob[];
+      /** True when the PR also moves the probe job off GitHub-hosted runners. */
+      selfHostedProbe: boolean;
     };
 
 /**
@@ -153,11 +171,23 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
       ? report.hosted.filter((target) => options.jobs?.includes(target.job))
       : report.hosted;
 
-    if (wanted.length === 0) {
+    // A repo fixed by an earlier run has nothing left to repoint, but its probe
+    // job may still pick its own runner the other way round. That is a change
+    // worth a PR on its own — otherwise switching a fixed repo over would mean
+    // editing the generated workflow by hand.
+    const selfHostedProbe = options.selfHostedProbe ?? false;
+    const staleProbes = report.verdicts
+      .map((verdict) => verdict.target)
+      .filter((target) => target.probe && usesProbeVariable(target) !== selfHostedProbe);
+
+    if (wanted.length === 0 && staleProbes.length === 0) {
       return { status: "no-changes" };
     }
 
     const byFile = new Map<string, RunsOnTarget[]>();
+    for (const target of staleProbes) {
+      byFile.set(target.file, byFile.get(target.file) ?? []);
+    }
     for (const target of wanted) {
       byFile.set(target.file, [...(byFile.get(target.file) ?? []), target]);
     }
@@ -176,7 +206,12 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
       });
       await writeFile(
         path,
-        applyWorkflowFix(source, { jobId: PROBE_JOB_ID, actionRef: uses, fixes }),
+        applyWorkflowFix(source, {
+          jobId: PROBE_JOB_ID,
+          actionRef: uses,
+          fixes,
+          ...(selfHostedProbe ? { probeRunsOn: SELF_HOSTED_PROBE_RUNS_ON } : {}),
+        }),
       );
     }
 
@@ -195,7 +230,7 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
         "commit",
         "--quiet",
         "-m",
-        commitMessage(jobs),
+        commitMessage(jobs, selfHostedProbe),
       ],
       {
         cwd: worktree,
@@ -203,7 +238,7 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
     );
 
     if (options.dryRun) {
-      return { status: "dry-run", branch, base, url: null, files, jobs };
+      return { status: "dry-run", branch, base, url: null, files, jobs, selfHostedProbe };
     }
 
     await git(["push", "--quiet", "-u", "origin", branch], { cwd: worktree });
@@ -212,12 +247,12 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
       repo,
       base,
       head: branch,
-      title: pullRequestTitle(jobs),
-      body: pullRequestBody(jobs),
+      title: pullRequestTitle(jobs, selfHostedProbe),
+      body: pullRequestBody(jobs, selfHostedProbe),
       cwd: worktree,
     });
 
-    return { status: "opened", branch, base, url, files, jobs };
+    return { status: "opened", branch, base, url, files, jobs, selfHostedProbe };
   } finally {
     // Leave nothing behind: no worktree, no local branch, no temp directory.
     await commandRunner("git", ["worktree", "remove", "--force", worktree], exec).catch(() => {});
@@ -301,43 +336,61 @@ function jobList(jobs: readonly FixedJob[]): string {
     .join("\n");
 }
 
-function commitMessage(jobs: readonly FixedJob[]): string {
+function commitMessage(jobs: readonly FixedJob[], selfHostedProbe: boolean): string {
   const labels = fixLabels(jobs);
-  const count = `${jobs.length} job${jobs.length === 1 ? "" : "s"}`;
 
-  return [
-    `Use a self-hosted runner for ${count} when one is online`,
-    "",
-    "A new gh-runner-check job asks which runners are up, and each job's",
-    "runs-on reads the answer: the self-hosted labels when a machine is",
-    "registered, and otherwise exactly the runner it uses today.",
-    "",
-    ...labels.map((label) => `  ${label}: ${jobsFor(jobs, label).join(", ")}`),
-    "",
-    "Generated by gh-runner.",
-  ].join("\n");
+  const body =
+    jobs.length === 0
+      ? [
+          `The ${PROBE_JOB_ID} job now takes its own runs-on from the`,
+          `${PROBE_RUNS_ON_VAR} repository variable, which gh-runner sets`,
+          "while a runner is online.",
+        ]
+      : [
+          `A ${PROBE_JOB_ID} job asks which runners are up, and each job's`,
+          "runs-on reads the answer: the self-hosted labels when a machine is",
+          "registered, and otherwise exactly the runner it uses today.",
+          "",
+          ...labels.map((label) => `  ${label}: ${jobsFor(jobs, label).join(", ")}`),
+        ];
+
+  return [pullRequestTitle(jobs, selfHostedProbe), "", ...body, "", "Generated by gh-runner."].join(
+    "\n",
+  );
 }
 
 function jobsFor(jobs: readonly FixedJob[], label: string): string[] {
   return jobs.filter((entry) => entry.label === label).map((entry) => entry.job);
 }
 
-function pullRequestTitle(jobs: readonly FixedJob[]): string {
+function pullRequestTitle(jobs: readonly FixedJob[], selfHostedProbe: boolean): string {
+  if (jobs.length === 0) {
+    return selfHostedProbe
+      ? `Run the ${PROBE_JOB_ID} job on a self-hosted runner too`
+      : `Run the ${PROBE_JOB_ID} job on a GitHub-hosted runner`;
+  }
   const count = `${jobs.length} job${jobs.length === 1 ? "" : "s"}`;
   return `Use a self-hosted runner for ${count} when one is online`;
 }
 
-function pullRequestBody(jobs: readonly FixedJob[]): string {
+function pullRequestBody(jobs: readonly FixedJob[], selfHostedProbe: boolean): string {
   const minutes = Math.round(MARKER_MAX_AGE_SECONDS / 60);
 
-  return `## What this changes
+  const repointed =
+    jobs.length === 0
+      ? `## What this changes
+
+The \`${PROBE_JOB_ID}\` job stops being pinned to a GitHub-hosted runner. Nothing else moves —
+the jobs it already picks runners for are unchanged.
+`
+      : `## What this changes
 
 Each of these jobs now runs on a self-hosted runner when one is online, and on exactly the
 runner it uses today when none is:
 
 ${jobList(jobs)}
 
-Picking between the two is a new \`${PROBE_JOB_ID}\` job. It runs
+Picking between the two is a \`${PROBE_JOB_ID}\` job. It runs
 [\`${ACTION_REPO}/${ACTION_PATH}\`](https://github.com/${ACTION_REPO}/tree/main/${ACTION_PATH}),
 which needs nothing but \`contents: read\` and the built-in \`GITHUB_TOKEN\` — there is no secret to
 add and no token to rotate.
@@ -345,7 +398,9 @@ add and no token to rotate.
 Each job keeps the platform it had: a \`macos-*\` job asks for \`${osLabel("osx")}\`, \`ubuntu-*\` for
 \`${osLabel("linux")}\`, \`windows-*\` for \`${osLabel("win")}\`. A job whose image doesn't name an OS gets the
 generic \`${DEFAULT_LABEL}\` label, which any registered machine answers.
+`;
 
+  return `${repointed}${probeRunnerSection(selfHostedProbe)}
 ## How it knows
 
 [\`gh-runner\`](https://www.npmjs.com/package/@singerbj/gh-runner) registers a developer machine as an
@@ -359,7 +414,7 @@ it queued.
 
 ## Before you merge
 
-- The probe adds a few seconds to every run, and it runs on a GitHub-hosted runner.
+${probeCaveat(selfHostedProbe)}
 - It fails open. A broken token, an API error, or no runner online all resolve to the fallback
   above, so a merged version of this can't leave your CI waiting on hardware nobody has started.
 - Nothing here makes a job *require* your machine. To do that, ask for the labels directly:
@@ -368,4 +423,47 @@ it queued.
 ---
 _Generated by [gh-runner](https://github.com/singerbj/gh-runner)_
 `;
+}
+
+/** Where the probe job itself runs, and why. */
+function probeRunnerSection(selfHostedProbe: boolean): string {
+  if (!selfHostedProbe) {
+    return `
+## Where the probe runs
+
+On \`${HOSTED_PROBE_RUNS_ON}\`. It is the one job that has to start before any of the others can be
+scheduled, so it takes the runner that is always there.
+
+If GitHub-hosted runners aren't available to this repo — a spending limit, a failed payment — that
+makes this job, and so the whole workflow, fail. Re-run \`gh-runner --fix-workflows
+--self-hosted-probe\` to have it prefer your own machine instead.
+`;
+  }
+
+  return `
+## Where the probe runs
+
+\`runs-on: ${SELF_HOSTED_PROBE_RUNS_ON}\`
+
+\`gh-runner\` sets the \`${PROBE_RUNS_ON_VAR}\` repository variable while a runner is online and
+deletes it on the way out, so the probe job runs on your machine whenever one is up and on
+\`${HOSTED_PROBE_RUNS_ON}\` when none is. Nothing in the workflow then needs a GitHub-hosted runner,
+which is what makes this work under a spending limit or a failed payment.
+
+\`runs-on\` is resolved before any job starts, so it can't read the probe job's own output — a
+repository variable is the only thing a runner can set that it can read.
+`;
+}
+
+/** The line about the probe job in "Before you merge". */
+function probeCaveat(selfHostedProbe: boolean): string {
+  if (!selfHostedProbe) {
+    return `- The probe adds a few seconds to every run, and it runs on a GitHub-hosted runner.`;
+  }
+
+  return `- The probe adds a few seconds to every run.
+- A repository variable has no expiry, unlike the markers below. A runner killed hard enough to
+  skip its own cleanup — \`kill -9\`, a laptop losing power — leaves \`${PROBE_RUNS_ON_VAR}\` set,
+  and the probe job then queues until a runner is back or you delete the variable. Deleting it is
+  always safe: the next run falls back to \`${HOSTED_PROBE_RUNS_ON}\`.`;
 }

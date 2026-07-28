@@ -234,8 +234,47 @@ Only GitHub-hosted jobs get repointed. A job already asking for `self-hosted` wi
 - `--fix-workflows` opens the PR without asking (useful when there's no terminal to prompt on).
 - `--fix-jobs build,test` limits the rewrite to specific job ids.
 - `--fix-label gh-runner-mac` forces one label onto every rewritten job, instead of letting each job keep its own platform. Each job's fallback is still its own.
+- `--self-hosted-probe` lets the `gh-runner-check` job run here too — see below.
 - `--no-fix-workflows` never offers.
 - `--no-workflow-check` skips the audit entirely.
+
+### When GitHub-hosted runners aren't available at all
+
+The `gh-runner-check` job runs on `ubuntu-latest`. It's the one job that has to start before any of the others can be scheduled, so it takes the runner that is always there.
+
+Except when it isn't. If hosted runners are unavailable to the repo — hosted minutes exhausted, a spending limit reached, a payment that failed — that job can't start, so nothing downstream of it is scheduled either:
+
+```
+Pick runners
+  The job was not started because recent account payments have failed or your
+  spending limit needs to be increased.
+```
+
+Self-hosted runners are free and unaffected by any of that, so the work itself would have run fine. `--self-hosted-probe` gets it out of the way:
+
+```bash
+npx @singerbj/gh-runner --fix-workflows --self-hosted-probe
+```
+
+The probe job is then written as
+
+```yaml
+runs-on: ${{ vars.GH_RUNNER_PROBE_RUNS_ON && fromJSON(vars.GH_RUNNER_PROBE_RUNS_ON) || 'ubuntu-latest' }}
+```
+
+and `gh-runner` sets the `GH_RUNNER_PROBE_RUNS_ON` repository variable to `["self-hosted","gh-runner"]` while a runner is online, re-asserting it on every heartbeat and deleting it on exit. With a runner up, **nothing in the workflow needs a GitHub-hosted runner**; with none, the variable is gone and the probe is back on `ubuntu-latest`. It also saves the hosted minutes the probe job spends on every run today.
+
+A repository variable is the only thing a runner can set that `runs-on` can read — the probe job can't read its own output, which is the whole reason it exists.
+
+**The trade:** a variable has no expiry, and the marker refs do. A runner killed hard enough to skip its cleanup — `kill -9`, a laptop losing power — leaves the variable set, and the probe job then queues until a runner is back rather than falling back to hosted. That's why this is opt-in. Clearing it by hand is always safe:
+
+```bash
+gh variable delete GH_RUNNER_PROBE_RUNS_ON
+```
+
+Setting the variable needs admin on the repo, the same rights registering a runner already needs. Without it the session says so once and carries on, and the probe job stays hosted.
+
+Re-running the fix is how you switch a repo between the two: on a repo that's already been fixed, with no job left to repoint, it opens a PR that changes only the probe job's own `runs-on`.
 
 If the branch already exists on the remote, it links the open PR instead of stacking a second one.
 
@@ -259,6 +298,7 @@ If the branch already exists on the remote, it links the open PR instead of stac
 | `--no-fix-workflows`     | Never offer to open it                                            |
 | `--fix-jobs a,b`         | Limit the fix to these job ids                                    |
 | `--fix-label LABEL`      | Force one label on every job the fix PR rewrites                  |
+| `--self-hosted-probe`    | Let the fix PR's probe job run here too, not only on a hosted one |
 | `-h, --help`             | Show help                                                         |
 | `-v, --version`          | Show version                                                      |
 

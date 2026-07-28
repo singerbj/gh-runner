@@ -28,6 +28,10 @@ export {
   osLabel,
   osForLabel,
   FIX_BRANCH_PREFIX,
+  PROBE_RUNS_ON_VAR,
+  PROBE_RUNS_ON_VALUE,
+  HOSTED_PROBE_RUNS_ON,
+  SELF_HOSTED_PROBE_RUNS_ON,
 } from "./constants.js";
 export { GhClient, parseDigestFromReleaseBody } from "./gh.js";
 export type { GhClientOptions, RepoVisibility } from "./gh.js";
@@ -41,6 +45,7 @@ export {
   readProbeExpression,
   readProbeTargets,
   parseTargetSpecs,
+  usesProbeVariable,
   PROBE_JOB_ID,
   PROBE_ACTION_PATH,
 } from "./workflows.js";

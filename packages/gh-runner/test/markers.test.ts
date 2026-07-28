@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { PROBE_RUNS_ON_VALUE, PROBE_RUNS_ON_VAR } from "../src/constants.js";
 import { MarkerPublisher } from "../src/heartbeat.js";
 import type { GhClient } from "../src/gh.js";
 import { silentLogger } from "../src/logger.js";
@@ -95,9 +96,17 @@ describe("MarkerPublisher", () => {
         calls.push(["delete", ref]);
         return true;
       },
+      setVariable: async (_repo: string, name: string, value: string) => {
+        calls.push(["set-var", name, value]);
+        return true;
+      },
+      deleteVariable: async (_repo: string, name: string) => {
+        calls.push(["delete-var", name]);
+        return true;
+      },
     }) as unknown as GhClient;
 
-  const publisher = (calls: string[][], now: () => number) => {
+  const publisher = (calls: string[][], now: () => number, probeVariable = false) => {
     const gh = stubGh(calls);
     let beat = () => {};
     const marker = new MarkerPublisher({
@@ -106,6 +115,7 @@ describe("MarkerPublisher", () => {
       gh,
       cleanupGh: gh,
       logger: silentLogger,
+      probeVariable,
       now,
       schedule: (fn) => {
         beat = fn;
@@ -159,6 +169,75 @@ describe("MarkerPublisher", () => {
 
     // Safe to call twice — cleanup runs on more than one exit path.
     calls.length = 0;
+    await marker.stop();
+    expect(calls).toEqual([]);
+  });
+
+  it("leaves the probe variable alone unless asked for it", async () => {
+    const calls: string[][] = [];
+    const { marker } = publisher(calls, () => 1_700_000_000_000);
+
+    await marker.start("main");
+    await marker.stop();
+
+    expect(calls.some(([verb]) => verb?.endsWith("-var"))).toBe(false);
+  });
+
+  it("publishes the probe variable alongside the markers, and clears it on stop", async () => {
+    const calls: string[][] = [];
+    const { marker } = publisher(calls, () => 1_700_000_000_000, true);
+
+    await marker.start("main");
+    expect(calls).toContainEqual(["set-var", PROBE_RUNS_ON_VAR, PROBE_RUNS_ON_VALUE]);
+
+    calls.length = 0;
+    await marker.stop();
+    expect(calls).toContainEqual(["delete-var", PROBE_RUNS_ON_VAR]);
+
+    // Nothing ages the variable out, so cleanup must not run twice and delete
+    // one a session started since has published.
+    calls.length = 0;
+    await marker.stop();
+    expect(calls).toEqual([]);
+  });
+
+  it("re-asserts the probe variable on every beat, in case a sibling cleared it", async () => {
+    const calls: string[][] = [];
+    let now = 1_700_000_000_000;
+    const { marker, beat } = publisher(calls, () => now, true);
+
+    await marker.start("main");
+    calls.length = 0;
+    now += 120_000;
+    beat();
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+
+    expect(calls).toContainEqual(["set-var", PROBE_RUNS_ON_VAR, PROBE_RUNS_ON_VALUE]);
+  });
+
+  it("stays up when the variable can't be written, and doesn't try to delete it", async () => {
+    const calls: string[][] = [];
+    const gh = {
+      defaultBranchSha: async () => "a".repeat(40),
+      createRef: async () => true,
+      deleteRef: async () => true,
+      setVariable: async () => false,
+      deleteVariable: async (_repo: string, name: string) => {
+        calls.push(["delete-var", name]);
+        return true;
+      },
+    } as unknown as GhClient;
+
+    const marker = new MarkerPublisher({
+      repo: "octocat/thing",
+      labels: ["gh-runner"],
+      gh,
+      cleanupGh: gh,
+      logger: silentLogger,
+      probeVariable: true,
+    });
+
+    expect(await marker.start("main")).toBe(true);
     await marker.stop();
     expect(calls).toEqual([]);
   });

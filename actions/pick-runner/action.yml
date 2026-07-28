@@ -1,0 +1,51 @@
+name: Pick runner
+description: >-
+  Resolve runs-on for each platform: the self-hosted labels when a gh-runner is
+  online, otherwise the GitHub-hosted runner the job used before.
+author: singerbj
+
+branding:
+  icon: cpu
+  color: green
+
+inputs:
+  targets:
+    description: >-
+      JSON object mapping a key to the labels to prefer and the runner to fall
+      back to, e.g.
+      {"linux":{"labels":["self-hosted","gh-runner-linux"],"fallback":"ubuntu-latest"}}
+    required: true
+  token:
+    description: >-
+      Token used to read refs/gh-runner/online/*. The default GITHUB_TOKEN is
+      enough, as long as the job grants `contents: read`.
+    required: false
+    default: ${{ github.token }}
+  repository:
+    description: OWNER/NAME to read markers from.
+    required: false
+    default: ${{ github.repository }}
+  max-age:
+    description: >-
+      Seconds a marker stays trusted after its last heartbeat. A runner
+      re-stamps every 120s, so this is three missed beats by default.
+    required: false
+    default: "420"
+  api-url:
+    description: GitHub API base URL.
+    required: false
+    default: ${{ github.api_url }}
+
+outputs:
+  runners:
+    description: >-
+      JSON object mapping each input key to its resolved runs-on — a label
+      array for self-hosted, or the fallback runner name.
+  online:
+    description: JSON array of the keys that resolved to a self-hosted runner.
+  any-online:
+    description: '"true" when at least one key resolved to a self-hosted runner.'
+
+runs:
+  using: node24
+  main: pick-runner.mjs

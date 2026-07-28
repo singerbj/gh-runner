@@ -179,27 +179,61 @@ When **no** job targets this runner, it offers to open a pull request:
 ```
 Update 3 jobs to self-hosted runs-on (gh-runner-linux, gh-runner-mac) and open a pull request? [y/N] y
 ==> Preparing a workflow fix on gh-runner/target-self-hosted-9f3c1ab7...
-    ✓ .github/workflows/ci.yml → build now wants gh-runner-linux
-    ✓ .github/workflows/ci.yml → bundle now wants gh-runner-mac
-      no gh-runner-mac runner online here — start one with: gh-runner mac
+    ✓ .github/workflows/ci.yml → build prefers gh-runner-linux, else ubuntu-latest
+    ✓ .github/workflows/ci.yml → bundle prefers gh-runner-mac, else macos-14
+      no gh-runner-mac runner in this session — start one with: gh-runner mac
     Pull request opened: https://github.com/octocat/thing/pull/42
 ```
 
-**Each job keeps the platform it already had.** The image in its current `runs-on` picks the label, so a `macos-14` job asks for `gh-runner-mac` and can only ever land on a Mac — never on whichever machine happens to be free. `ubuntu-*` gets `gh-runner-linux`, `windows-*` gets `gh-runner-windows`, and every variant of those names is understood (`macos-13-xlarge`, `ubuntu-24.04-arm`, `ubuntu-latest-8-cores`). Only a job whose runner name says nothing about an OS — a larger runner you named yourself — falls back to the generic `gh-runner`, which any registered machine answers.
+**A repointed job still runs when nobody is home.** It uses your machine while a runner is online and the runner it already had when none is — so merging the PR can't leave CI waiting on hardware nobody started:
 
-If the label a job ends up with has no runner online in this session, it says so and tells you which command starts one.
+```yaml
+jobs:
+  gh-runner-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      runners: "${{ steps.pick.outputs.runners }}"
+    steps:
+      - uses: singerbj/gh-runner/actions/pick-runner@<sha> # v1.0.3
+        id: pick
+        with:
+          targets: |
+            {
+              "linux": { "labels": ["self-hosted","gh-runner-linux"], "fallback": "ubuntu-latest" }
+            }
+
+  build:
+    needs: [gh-runner-check]
+    runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || 'ubuntu-latest' }}
+```
+
+**Each job keeps the platform it already had.** The image in its current `runs-on` picks the label, so a `macos-14` job asks for `gh-runner-mac` and can only ever land on a Mac — never on whichever machine happens to be free. `ubuntu-*` gets `gh-runner-linux`, `windows-*` gets `gh-runner-windows`, and every variant of those names is understood (`macos-13-xlarge`, `ubuntu-24.04-arm`, `ubuntu-latest-8-cores`). Only a job whose runner name says nothing about an OS — a larger runner you named yourself — falls back to the generic `gh-runner`, which any registered machine answers. The same name is also its fallback, so a macOS job that can't find your Mac goes back to `macos-14` rather than to a Linux box.
+
+If a label has no runner in this session, it says so and tells you which command starts one — but those jobs run on GitHub in the meantime rather than queueing.
+
+### How a workflow knows the runner is up
+
+`runs-on` can't call an API, and the one that lists self-hosted runners needs repo admin — a permission no workflow's `GITHUB_TOKEN` can be granted. So the runner announces itself instead.
+
+While `gh-runner` is up it publishes a ref per label, `refs/gh-runner/online/<label>/<unix-seconds>`, and re-stamps it every two minutes. The `gh-runner-check` job reads those refs with nothing but `contents: read` and the built-in token — **no secret to create, no PAT to rotate, nothing to configure in the repo**. Markers are removed on exit, and one that stops being re-stamped is ignored after seven minutes, so a laptop that closes mid-session sends the next run back to GitHub-hosted instead of stranding it.
+
+The refs live outside `refs/heads` and `refs/tags`, so they never appear as branches or releases. Publishing them needs push access, which you already have; without it the runner still works and simply says the jobs will use their fallback.
+
+The probe [fails open](../../actions/pick-runner). A missing token, an API error, a malformed input, or no runner online all resolve to the fallback runner, and the generated `runs-on` carries its own `|| 'ubuntu-latest'` in case the probe job produces nothing at all.
 
 The rewrite happens in a throwaway [`git worktree`](https://git-scm.com/docs/git-worktree) checked out from your default branch — **your working tree, index, staged changes, and current branch are never touched**, even with work in flight. The worktree and its local branch are removed on every exit path, including failures.
 
 The branch and the worktree directory both carry a random suffix, so a run that was killed before it could clean up can never block the next one. If a fix branch is already on the remote, whatever its suffix, it says so instead of stacking a second pull request on top of it.
 
-Only the bytes of each `runs-on` value are spliced, so comments, formatting, and every other line survive the edit — the diff shows one changed line per job and nothing else.
+Only the bytes it has to are spliced — each `runs-on` value, each job's `needs`, and one insertion above the first job — so comments, formatting, and every other line survive the edit.
 
 Only GitHub-hosted jobs get repointed. A job already asking for `self-hosted` with labels you lack is left alone, because the fix there is on your side (`--labels`), not in the YAML.
 
 - `--fix-workflows` opens the PR without asking (useful when there's no terminal to prompt on).
 - `--fix-jobs build,test` limits the rewrite to specific job ids.
-- `--fix-label gh-runner-mac` forces one label onto every rewritten job, instead of letting each job keep its own platform.
+- `--fix-label gh-runner-mac` forces one label onto every rewritten job, instead of letting each job keep its own platform. Each job's fallback is still its own.
 - `--no-fix-workflows` never offers.
 - `--no-workflow-check` skips the audit entirely.
 

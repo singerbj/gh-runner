@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  applyRunsOnFix,
+  PROBE_JOB_ID,
+  applyWorkflowFix,
   classifyTarget,
   hostedRunnerOs,
   inspectWorkflows,
@@ -11,7 +12,7 @@ import {
   parseWorkflow,
   readRunsOnLabels,
 } from "../src/workflows.js";
-import type { RunsOnTarget } from "../src/workflows.js";
+import type { RunsOnTarget, WorkflowFixPlan } from "../src/workflows.js";
 
 const RUNNER_LABELS = ["self-hosted", "Linux", "X64", "gh-runner", "gh-runner-linux", "my-box"];
 
@@ -172,6 +173,7 @@ describe("classifyTarget", () => {
     labels,
     unresolved: undefined,
     range: [0, 0],
+    probe: false,
   });
 
   it("matches when the runner carries every requested label", () => {
@@ -232,8 +234,28 @@ describe("hostedRunnerOs", () => {
   });
 });
 
-describe("applyRunsOnFix", () => {
-  it("takes a label per job", () => {
+describe("applyWorkflowFix", () => {
+  const ACTION = "singerbj/gh-runner/actions/pick-runner@abc123";
+  const KEYS = { osx: "mac", linux: "linux", win: "windows" } as const;
+  const LABELS = {
+    osx: "gh-runner-mac",
+    linux: "gh-runner-linux",
+    win: "gh-runner-windows",
+  } as const;
+
+  /** Mirrors what proposeWorkflowFix builds: one fix per hosted job. */
+  const planFor = (source: string, only?: readonly string[]): WorkflowFixPlan => ({
+    jobId: PROBE_JOB_ID,
+    actionRef: ACTION,
+    fixes: parseRunsOn(source, "ci.yml")
+      .filter((target) => target.labels.length > 0 && (!only || only.includes(target.job)))
+      .map((target) => {
+        const os = hostedRunnerOs(target.labels) ?? "linux";
+        return { target, key: KEYS[os], labels: ["self-hosted", LABELS[os]] };
+      }),
+  });
+
+  it("prefers each platform's own runner and keeps the hosted one as the fallback", () => {
     const source = [
       "jobs:",
       "  mac:",
@@ -241,37 +263,92 @@ describe("applyRunsOnFix", () => {
       "  linux:",
       "    runs-on: ubuntu-latest",
     ].join("\n");
-    const fixed = applyRunsOnFix(source, parseRunsOn(source, "ci.yml"), (target) =>
-      target.job === "mac" ? "gh-runner-mac" : "gh-runner-linux",
+    const fixed = applyWorkflowFix(source, planFor(source));
+
+    expect(fixed).toContain(
+      "runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).mac || 'macos-14' }}",
     );
-    expect(fixed).toBe(
-      [
-        "jobs:",
-        "  mac:",
-        "    runs-on: [self-hosted, gh-runner-mac]",
-        "  linux:",
-        "    runs-on: [self-hosted, gh-runner-linux]",
-      ].join("\n"),
+    expect(fixed).toContain(
+      "runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || 'ubuntu-latest' }}",
     );
+    expect(fixed).toContain('"mac": { "labels": ["self-hosted","gh-runner-mac"]');
+    expect(fixed).toContain('"fallback": "ubuntu-latest" }');
   });
 
-  it("rewrites an inline value, keeping indentation", () => {
-    const source = ["jobs:", "  build:", "    runs-on: ubuntu-latest", "    steps: []"].join("\n");
-    expect(applyRunsOnFix(source, parseRunsOn(source, "ci.yml"), "gh-runner")).toBe(
-      ["jobs:", "  build:", "    runs-on: [self-hosted, gh-runner]", "    steps: []"].join("\n"),
-    );
+  it("adds the probe job once, above the jobs that read it", () => {
+    const source = ["jobs:", "  a:", "    runs-on: ubuntu-latest"].join("\n");
+    const fixed = applyWorkflowFix(source, planFor(source));
+
+    expect(fixed.indexOf("gh-runner-check:")).toBeLessThan(fixed.indexOf("  a:"));
+    expect(fixed.match(/gh-runner-check:/g)).toHaveLength(1);
+    expect(fixed).toContain(`- uses: ${ACTION}`);
+    expect(fixed).toContain("contents: read");
   });
 
-  it("collapses a block-form value onto one line", () => {
+  it("adds needs in whichever shape the job already uses", () => {
     const source = [
       "jobs:",
-      "  build:",
-      "    runs-on:",
-      "      - ubuntu-latest",
-      "    steps: []",
+      "  none:",
+      "    runs-on: ubuntu-latest",
+      "  scalar:",
+      "    needs: none",
+      "    runs-on: ubuntu-latest",
+      "  flow:",
+      "    needs: [none, scalar]",
+      "    runs-on: ubuntu-latest",
+      "  block:",
+      "    needs:",
+      "      - none",
+      "    runs-on: ubuntu-latest",
     ].join("\n");
-    expect(applyRunsOnFix(source, parseRunsOn(source, "ci.yml"), "gh-runner")).toBe(
-      ["jobs:", "  build:", "    runs-on: [self-hosted, gh-runner]", "    steps: []"].join("\n"),
+    const fixed = applyWorkflowFix(source, planFor(source));
+
+    expect(fixed).toContain("  none:\n    needs: [gh-runner-check]\n    runs-on:");
+    expect(fixed).toContain("needs: [none, gh-runner-check]");
+    expect(fixed).toContain("needs: [none, scalar, gh-runner-check]");
+    expect(fixed).toContain("needs:\n      - none\n      - gh-runner-check");
+  });
+
+  it("still parses, and reads back as asking for this runner", () => {
+    const source = ["jobs:", "  a:", "    runs-on:", "      - ubuntu-latest", "    steps: []"].join(
+      "\n",
+    );
+    const fixed = applyWorkflowFix(source, planFor(source));
+    const reparsed = parseWorkflow(fixed, "ci.yml");
+
+    expect(reparsed.error).toBeUndefined();
+    const job = reparsed.targets.find((target) => target.job === "a");
+    expect(job?.labels).toEqual(["self-hosted", "gh-runner-linux"]);
+    expect(job?.unresolved).toBeUndefined();
+    expect(classifyTarget(job as RunsOnTarget, [RUNNER_LABELS]).kind).toBe("match");
+  });
+
+  it("joins a job to the probe that is already there instead of adding a second", () => {
+    const source = ["jobs:", "  a:", "    runs-on: ubuntu-latest"].join("\n");
+    const once = applyWorkflowFix(source, planFor(source));
+
+    // A macOS job added after the first fix.
+    const grown = `${once}\n  mac:\n    runs-on: macos-14\n`;
+    const twice = applyWorkflowFix(grown, planFor(grown, ["mac"]));
+
+    expect(twice.match(/gh-runner-check:/g)).toHaveLength(1);
+    expect(twice).toContain('"linux": { "labels": ["self-hosted","gh-runner-linux"]');
+    expect(twice).toContain('"mac": { "labels": ["self-hosted","gh-runner-mac"]');
+    expect(parseWorkflow(twice, "ci.yml").error).toBeUndefined();
+  });
+
+  it("goes above the comment written about the first job, not below it", () => {
+    const source = [
+      "jobs:",
+      "  # this one is expensive",
+      "  a:",
+      "    runs-on: ubuntu-latest",
+    ].join("\n");
+    const fixed = applyWorkflowFix(source, planFor(source));
+
+    expect(fixed).toContain("  # this one is expensive\n  a:");
+    expect(fixed.indexOf("gh-runner-check:")).toBeLessThan(
+      fixed.indexOf("# this one is expensive"),
     );
   });
 
@@ -286,48 +363,12 @@ describe("applyRunsOnFix", () => {
       "    steps:",
       "      - run: make # build it",
     ].join("\n");
-    const fixed = applyRunsOnFix(source, parseRunsOn(source, "ci.yml"), "gh-runner");
+    const fixed = applyWorkflowFix(source, planFor(source));
 
     expect(fixed).toContain("# top comment");
     expect(fixed).toContain("  build: # the important one");
-    expect(fixed).toContain("    runs-on: [self-hosted, gh-runner] # hosted for now");
+    expect(fixed).toContain("}} # hosted for now");
     expect(fixed).toContain("      - run: make # build it");
-  });
-
-  it("rewrites several jobs in one pass without shifting each other", () => {
-    const source = [
-      "jobs:",
-      "  a:",
-      "    runs-on: ubuntu-latest",
-      "  b:",
-      "    runs-on:",
-      "      - macos-14",
-      "      - large",
-      "  c:",
-      "    runs-on: windows-latest",
-    ].join("\n");
-    const fixed = applyRunsOnFix(source, parseRunsOn(source, "ci.yml"), "gh-runner");
-    expect(fixed).toBe(
-      [
-        "jobs:",
-        "  a:",
-        "    runs-on: [self-hosted, gh-runner]",
-        "  b:",
-        "    runs-on: [self-hosted, gh-runner]",
-        "  c:",
-        "    runs-on: [self-hosted, gh-runner]",
-      ].join("\n"),
-    );
-  });
-
-  it("still parses after being rewritten", () => {
-    const source = ["jobs:", "  a:", "    runs-on:", "      - ubuntu-latest", "    steps: []"].join(
-      "\n",
-    );
-    const fixed = applyRunsOnFix(source, parseRunsOn(source, "ci.yml"), "gh-runner-mac");
-    const reparsed = parseWorkflow(fixed, "ci.yml");
-    expect(reparsed.error).toBeUndefined();
-    expect(reparsed.targets[0]?.labels).toEqual(["self-hosted", "gh-runner-mac"]);
   });
 
   it("leaves untargeted jobs alone", () => {
@@ -338,10 +379,26 @@ describe("applyRunsOnFix", () => {
       "  move:",
       "    runs-on: ubuntu-latest",
     ].join("\n");
-    const targets = parseRunsOn(source, "ci.yml").filter((t) => t.job === "move");
-    const fixed = applyRunsOnFix(source, targets, "gh-runner");
+    const fixed = applyWorkflowFix(source, planFor(source, ["move"]));
+
     expect(fixed).toContain("  keep:\n    runs-on: ubuntu-latest");
-    expect(fixed).toContain("  move:\n    runs-on: [self-hosted, gh-runner]");
+    expect(fixed).toContain("  move:\n    needs: [gh-runner-check]");
+  });
+
+  it("does not shadow a job that already owns the name", () => {
+    const source = [
+      "jobs:",
+      "  gh-runner-check:",
+      "    runs-on: ubuntu-latest",
+      "    steps: []",
+      "  a:",
+      "    runs-on: ubuntu-latest",
+    ].join("\n");
+    const fixed = applyWorkflowFix(source, planFor(source, ["a"]));
+
+    expect(fixed).toContain("gh-runner-check-2:");
+    expect(fixed).toContain("needs: [gh-runner-check-2]");
+    expect(parseWorkflow(fixed, "ci.yml").error).toBeUndefined();
   });
 });
 

@@ -13,12 +13,15 @@ Linux can come from a container, so any machine can serve it; macOS and Windows 
 
 It also audits `.github/workflows` first, so you find out that nothing targets `runs-on: [self-hosted, gh-runner]` _before_ you sit waiting for a job that never arrives — and it offers to open a PR that fixes the YAML, prepared in a throwaway git worktree so your working tree is never touched.
 
+That PR doesn't hand your CI to a laptop that might be closed. Each job it repoints uses your machine while a runner is online and **the runner it already had** when none is, decided per run by [`actions/pick-runner`](actions/pick-runner) — which needs no secret, only `contents: read`.
+
 ## What's in here
 
-| Path                 | Package               | What it is                                         |
-| -------------------- | --------------------- | -------------------------------------------------- |
-| `packages/gh-runner` | `@singerbj/gh-runner` | The CLI and its programmatic API (TypeScript, ESM) |
-| `apps/web`           | `@gh-runner/web`      | The landing page (Vite, static, deployed to Pages) |
+| Path                  | Package               | What it is                                         |
+| --------------------- | --------------------- | -------------------------------------------------- |
+| `packages/gh-runner`  | `@singerbj/gh-runner` | The CLI and its programmatic API (TypeScript, ESM) |
+| `apps/web`            | `@gh-runner/web`      | The landing page (Vite, static, deployed to Pages) |
+| `actions/pick-runner` | —                     | The action the fix PR calls to choose a runner     |
 
 Full CLI docs live in [`packages/gh-runner/README.md`](packages/gh-runner/README.md).
 

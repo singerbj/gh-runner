@@ -43,3 +43,40 @@ export const OS_NAMES: Readonly<Record<RunnerOs, string>> = {
  * or on the remote — can never collide with this one.
  */
 export const FIX_BRANCH_PREFIX = "gh-runner/target-self-hosted";
+
+/** Where the probe action the fix PR calls is published from. */
+export const ACTION_REPO = "singerbj/gh-runner";
+export const ACTION_PATH = "actions/pick-runner";
+
+/**
+ * The `uses:` the fix PR writes.
+ *
+ * A tag is a mutable pointer, and this one lands in someone else's workflow, so
+ * it is resolved to the commit it names and pinned to that — with the tag left
+ * in a trailing comment, the same way this repo pins the actions it consumes.
+ * Without a resolved commit the tag is written on its own; a fix PR is more
+ * useful than no fix PR, and the tag is still one this repo published.
+ */
+export function actionRef(version: string, sha?: string | null): string {
+  const tag = `v${version}`;
+  const base = `${ACTION_REPO}/${ACTION_PATH}`;
+  return sha ? `${base}@${sha} # ${tag}` : `${base}@${tag}`;
+}
+
+/** The key a job reads out of the probe job's output — `linux`, `mac`, `windows`. */
+export const OS_KEYS: Readonly<Record<RunnerOs, string>> = {
+  osx: "mac",
+  linux: "linux",
+  win: "windows",
+};
+
+/** A probe output key for any label, so `--fix-label` works the same way. */
+export function probeKey(label: string): string {
+  const os = osForLabel(label);
+  if (os) return OS_KEYS[os];
+  const key = label
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return /^[a-z]/.test(key) ? key : `runner_${key}`;
+}

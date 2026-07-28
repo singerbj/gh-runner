@@ -37,9 +37,33 @@ export {
   parseRunsOn,
   classifyTarget,
   hostedRunnerOs,
-  applyRunsOnFix,
+  applyWorkflowFix,
+  readProbeExpression,
+  readProbeTargets,
+  parseTargetSpecs,
+  PROBE_JOB_ID,
+  PROBE_ACTION_PATH,
 } from "./workflows.js";
-export type { WorkflowReport, RunsOnTarget, TargetVerdict } from "./workflows.js";
+export type {
+  WorkflowReport,
+  RunsOnTarget,
+  TargetVerdict,
+  RunsOnFix,
+  WorkflowFixPlan,
+  ProbeSpec,
+} from "./workflows.js";
+export {
+  MARKER_PREFIX,
+  MARKER_MAX_AGE_SECONDS,
+  HEARTBEAT_INTERVAL_MS,
+  markerRef,
+  parseMarkerRef,
+  onlineLabels,
+  labelsAreOnline,
+} from "./markers.js";
+export type { Marker } from "./markers.js";
+export { MarkerPublisher } from "./heartbeat.js";
+export type { MarkerPublisherOptions } from "./heartbeat.js";
 export { proposeWorkflowFix, fixLabelFor, fixLabels } from "./fix.js";
 export type { WorkflowFixOptions, WorkflowFixResult, FixedJob } from "./fix.js";
 export { createConfirm, declineAll } from "./prompt.js";

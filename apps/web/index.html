@@ -167,6 +167,12 @@
 Update 3 jobs and open a pull request? <span class="c-dim">[y/N]</span> y
 <span class="c-green">Pull request opened:</span> https://github.com/octocat/thing/pull/42</code></pre>
         <p class="note">
+          The PR is safe to merge with nobody at the keyboard: a repointed job uses your machine
+          while a runner is online, and the runner it already had when none is. The runner publishes
+          its liveness as a ref under <code>refs/gh-runner/online/</code>; the workflow reads it
+          with the built-in token, so there is no secret to add.
+        </p>
+        <p class="note">
           <code>--fix-workflows</code> skips the prompt, <code>--no-fix-workflows</code> silences
           the offer, <code>--fix-jobs a,b</code> narrows it, <code>--no-workflow-check</code> skips
           the audit entirely.

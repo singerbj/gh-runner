@@ -77,16 +77,25 @@ export class GhClient {
     }
   }
 
-  /** `gh api <path>`, optionally with a `--jq` filter. */
+  /** `gh api <path>`, optionally with a `--jq` filter and string fields. */
   async api(
     path: string,
-    options: { method?: "GET" | "POST" | "DELETE"; jq?: string } = {},
+    options: {
+      method?: "GET" | "POST" | "PATCH" | "DELETE";
+      jq?: string;
+      fields?: Readonly<Record<string, string>>;
+    } = {},
   ): Promise<string> {
     const args = ["api"];
     if (options.method && options.method !== "GET") {
       args.push("-X", options.method);
     }
     args.push(path);
+    for (const [name, value] of Object.entries(options.fields ?? {})) {
+      // `-f` sends the value as a string and never as a shell word: gh parses
+      // `name=value` itself, so a value with spaces or quotes stays intact.
+      args.push("-f", `${name}=${value}`);
+    }
     if (options.jq) {
       args.push("--jq", options.jq);
     }
@@ -305,6 +314,89 @@ export class GhClient {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /** The commit a tag points at, or null when the tag doesn't exist. */
+  async tagSha(repo: string, tag: string): Promise<string | null> {
+    try {
+      // An annotated tag's ref points at the tag object; `object.sha` is what
+      // `uses:` needs either way, since GitHub resolves both.
+      const sha = (
+        await this.api(`repos/${repo}/git/ref/tags/${tag}`, { jq: ".object.sha" })
+      ).trim();
+      return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** True when `path` exists in `repo` at `ref`. */
+  async pathExists(repo: string, ref: string, path: string): Promise<boolean> {
+    try {
+      const type = await this.api(`repos/${repo}/contents/${path}?ref=${ref}`, { jq: ".type" });
+      return type.trim().length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /** The commit at the tip of the repo's default branch. */
+  async defaultBranchSha(repo: string, branch: string): Promise<string | null> {
+    try {
+      const sha = (
+        await this.api(`repos/${repo}/git/ref/heads/${branch}`, { jq: ".object.sha" })
+      ).trim();
+      return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Creates a ref, replacing one that already exists.
+   *
+   * Markers live outside `refs/heads` and `refs/tags`, so nothing here can
+   * touch a branch or a release — the worst a bug could do is leave a dangling
+   * pointer at a commit that already existed.
+   */
+  async createRef(repo: string, ref: string, sha: string): Promise<boolean> {
+    try {
+      await this.api(`repos/${repo}/git/refs`, { method: "POST", fields: { ref, sha } });
+      return true;
+    } catch {
+      // 422 means it already exists; move it instead.
+      try {
+        await this.api(`repos/${repo}/git/${ref}`, {
+          method: "PATCH",
+          fields: { sha, force: "true" },
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
+  /** Best effort — a marker that outlives its runner ages out on its own. */
+  async deleteRef(repo: string, ref: string): Promise<boolean> {
+    try {
+      await this.api(`repos/${repo}/git/${ref}`, { method: "DELETE" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Every ref under `refs/<prefix>`, as full ref names. */
+  async matchingRefs(repo: string, prefix: string): Promise<string[]> {
+    try {
+      const output = await this.api(`repos/${repo}/git/matching-refs/${prefix}`, {
+        jq: ".[].ref",
+      });
+      return output.split("\n").filter(Boolean);
+    } catch {
+      return [];
     }
   }
 

@@ -9,9 +9,10 @@
 # Optional: GH_RUNNER_NAME (default: the container's hostname) and
 # GH_RUNNER_LABELS (extra labels, comma-separated).
 #
-# Every job on this runner can read GH_TOKEN. Jobs get no Docker socket and
-# nothing from the host, so `docker build`, `services:` and `container:` jobs
-# won't run here.
+# Jobs don't inherit GH_TOKEN, but they run as the same user as gh-runner and
+# could read it from /proc, so scope it to the one repo. Jobs get no Docker
+# socket and nothing from the host, so `docker build`, `services:` and
+# `container:` jobs won't run here.
 
 services:
   gh-runner:

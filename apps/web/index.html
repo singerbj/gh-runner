@@ -258,11 +258,12 @@
           </li>
         </ul>
         <div class="warning spaced">
-          <h3>Every job on it can read the token</h3>
+          <h3>Scope the token to the one repo</h3>
           <p>
-            The runner passes its environment on to the jobs it runs, <code>GH_TOKEN</code>
-            included. Scope the token to the one repo, and only point it at a repo where you trust
-            everyone who can push.
+            Jobs don't inherit <code>GH_TOKEN</code>: it's removed from the environment the runner
+            hands them. They do run as the same user as <code>gh-runner</code>, though, so a job
+            that goes looking can read it from <code>/proc</code>. Only point it at a repo where you
+            trust everyone who can push.
           </p>
         </div>
         <details class="embed">

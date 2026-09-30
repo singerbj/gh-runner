@@ -328,7 +328,7 @@ The image is `node:lts` plus `gh`, `tini` and `gh-runner`, running `gh-runner li
 
 - **Linux only.** It's a Linux container, so it serves `gh-runner-linux` (and `gh-runner`).
 - **No Docker socket, no host mounts.** Jobs can't reach anything else on the server, but `docker build`, `services:` and `container:` jobs won't run there either.
-- **Every job can read `GH_TOKEN`.** The runner passes its environment on to the jobs it runs. Scope the token to the one repo, and only use this on a repo where you trust everyone who can push.
+- **Jobs don't get `GH_TOKEN`, but a determined one can find it.** It's removed from the environment jobs inherit, so it isn't in a step's `env`, its logs, or a `gh` it runs. Jobs do run as the same user as `gh-runner`, though, which can read the token from `/proc`. Scope it to the one repo, and only use this on a repo where you trust everyone who can push.
 - **The workflows need the fallback `runs-on` first.** Run `npx @singerbj/gh-runner setup` in the repo once.
 - **Stopping it cleans up.** `docker stop` (or a Coolify stop) sends SIGTERM, and `gh-runner` deregisters the runner and deletes any variables it set within the 60-second grace period.
 
@@ -357,6 +357,7 @@ The runner itself is checked before it is trusted:
 - The registration token is passed to Docker through the environment, never on the command line, where `ps` and `/proc/<pid>/cmdline` would show it to every other account on the machine.
 - Commands are spawned without a shell, so tokens and repo names can't be re-read as shell syntax.
 - Your credentials stay in `gh`; this tool never handles a long-lived token.
+- `GH_TOKEN`, `GITHUB_TOKEN` and the enterprise variants are removed from the environment the actions runner starts with, so jobs don't inherit them.
 
 And nothing is left behind:
 
@@ -371,7 +372,7 @@ And nothing is left behind:
 
 - **`config.sh --token` puts the registration token in argv.** The native path has no other way to pass it, so on a shared machine another local account can read it for the second or two registration takes. It expires in an hour and only ever grants "register a runner on this repo". The container path doesn't have this problem.
 - **A job is only as isolated as the mode you chose.** Native means none.
-- **With `GH_TOKEN` in the environment, jobs can read it.** The runner hands its environment to every job, so a token used to log `gh` in that way (as the Docker image does) is readable by any workflow that runs here. Scope it to the one repo.
+- **Jobs run as the same user as `gh-runner`.** They don't inherit `GH_TOKEN`, but a job that goes looking can read it from `gh-runner`'s process (`/proc/<pid>/environ`), or read your `gh` login from disk on a native runner. Scope any token to the one repo.
 
 ## Programmatic use
 

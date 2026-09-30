@@ -459,6 +459,41 @@ h3 {
   margin-bottom: 0;
 }
 
+/* A block that follows another inside the same section. */
+.spaced {
+  margin-top: 1.25rem;
+}
+
+/* The compose file and the setup prompt, embedded from packages/gh-runner. */
+.embed {
+  margin-top: 1.25rem;
+}
+
+.embed summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.93rem;
+  width: fit-content;
+}
+
+.embed summary:hover {
+  color: var(--text);
+}
+
+.embed .code-block {
+  margin-top: 0.85rem;
+  max-height: 32rem;
+  overflow-y: auto;
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+/* Prose reads better wrapped than scrolled sideways. */
+.code-block.prose {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .checklist {
   list-style: none;
   padding: 0;

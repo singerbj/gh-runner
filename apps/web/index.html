@@ -30,6 +30,8 @@
         <nav aria-label="Primary">
           <a href="#usage">Usage</a>
           <a href="#workflow">In your workflow</a>
+          <a href="#always-on">Always on</a>
+          <a href="#ai-setup">AI setup</a>
           <a href="#safety">Safety</a>
           <a
             class="ghost-link"
@@ -199,6 +201,90 @@ Update 3 jobs and open a pull request? <span class="c-dim">[y/N]</span> y
           with no volumes and no Docker socket. Docker can't give you macOS or Windows, though:
           there's no macOS container runtime, and Windows containers need a Windows host.
         </p>
+      </section>
+
+      <section class="wrap" id="always-on" aria-labelledby="always-on-heading">
+        <h2 id="always-on-heading">Always on, with Docker Compose</h2>
+        <p class="section-lede">
+          For a server that should always be ready to take jobs, such as a home lab box, a VPS or a
+          Coolify host, run it with Docker Compose. <code>gh-runner</code> is the container's main
+          process, so the runner is online whenever the container is up, restarts with it, and
+          deregisters itself when the container stops. Every release attaches a copy of the file
+          that installs that release's version.
+        </p>
+        <pre
+          class="code-block"
+        ><code><span class="c-prompt">$</span> curl -fsSLO https://github.com/singerbj/gh-runner/releases/latest/download/docker-compose.yml
+<span class="c-prompt">$</span> printf 'GH_TOKEN=%s\nGH_RUNNER_REPO=%s\n' <span class="c-dim">"github_pat_…" "you/your-repo"</span> &gt; .env
+<span class="c-prompt">$</span> docker compose up -d
+<span class="c-prompt">$</span> docker compose logs -f   <span class="c-dim"># wait for "Runner is live"</span></code></pre>
+        <p class="note">
+          <strong>On Coolify:</strong> add a <em>Docker Compose Empty</em> resource, paste the file,
+          set <code>GH_TOKEN</code> and <code>GH_RUNNER_REPO</code> under Environment Variables, and
+          deploy. It needs no domain or port.
+        </p>
+        <ul class="checklist spaced">
+          <li>
+            <strong>Token:</strong> a fine-grained token for that one repo, with
+            <code>Administration</code>, <code>Actions</code> and <code>Variables</code> set to
+            read/write. The repo must be private.
+          </li>
+          <li>
+            <strong>Options:</strong> <code>GH_RUNNER_NAME</code> (default
+            <code>gh-runner-docker</code>), <code>GH_RUNNER_LABELS</code> for extra labels, and
+            <code>GH_RUNNER_VERSION</code> to install a specific version.
+          </li>
+          <li>
+            <strong>Linux only.</strong> Jobs run as an unprivileged user inside the container, with
+            no Docker socket and nothing from the host mounted. That keeps them away from anything
+            else on the server, but it also means <code>docker build</code>,
+            <code>services:</code> and <code>container:</code> jobs won't run there.
+          </li>
+        </ul>
+        <div class="warning spaced">
+          <h3>Every job on it can read the token</h3>
+          <p>
+            The runner passes its environment on to the jobs it runs, <code>GH_TOKEN</code>
+            included. Scope the token to the one repo, and only point it at a repo where you trust
+            everyone who can push.
+          </p>
+        </div>
+        <details class="embed">
+          <summary>Show <code>docker-compose.yml</code></summary>
+          <pre class="code-block"><code data-embed="compose"></code></pre>
+        </details>
+      </section>
+
+      <section class="wrap" id="ai-setup" aria-labelledby="ai-setup-heading">
+        <h2 id="ai-setup-heading">Set up a repo with an AI agent</h2>
+        <p class="section-lede">
+          Paste this into Claude Code, Copilot, Cursor or any coding agent, with your repo open. It
+          makes the same edit as <code>gh-runner</code>'s own pull request: every job stays on its
+          GitHub-hosted runner and falls back to your machine only when GitHub can't start it. It
+          also flags jobs that need Docker or a particular CPU, documents the setup in your README,
+          and opens a PR with a table of every job it changed or skipped.
+        </p>
+        <div class="cta">
+          <button
+            class="copy-command"
+            type="button"
+            data-copy-embed="prompt"
+            aria-label="Copy the gh-runner setup prompt to clipboard"
+          >
+            <code>Copy the setup prompt</code>
+            <span class="copy-state" aria-hidden="true">Copy</span>
+          </button>
+          <a
+            class="button-secondary"
+            href="https://github.com/singerbj/gh-runner/releases/latest/download/gh-runner-setup-prompt.md"
+            rel="noreferrer noopener"
+            >Download as Markdown</a
+          >
+        </div>
+        <details class="embed">
+          <summary>Read the prompt</summary>
+          <pre class="code-block prose"><code data-embed="prompt"></code></pre>
+        </details>
       </section>
 
       <section class="wrap" id="safety" aria-labelledby="safety-heading">

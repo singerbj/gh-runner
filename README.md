@@ -30,6 +30,13 @@ No job decides that — it couldn't, with no runner to start on. `gh-runner` not
 
 Full CLI docs live in [`packages/gh-runner/README.md`](packages/gh-runner/README.md).
 
+Two more things ship with every release, next to the CLI:
+
+- **[`packages/gh-runner/deploy/docker-compose.yml`](packages/gh-runner/deploy/docker-compose.yml)** keeps a Linux runner online permanently on any server with Docker, Coolify included. [Details](packages/gh-runner/README.md#keeping-a-runner-online-with-docker-compose).
+- **[`packages/gh-runner/prompts/setup-repo.md`](packages/gh-runner/prompts/setup-repo.md)** is a prompt that has a coding agent set up a repo's workflows for gh-runner. [Details](packages/gh-runner/README.md#setting-a-repo-up-with-an-ai-agent).
+
+Both are in the npm package, and are attached to every GitHub release as `docker-compose.yml` and `gh-runner-setup-prompt.md`. The landing page embeds them straight from these files.
+
 ## Development
 
 Requires Node 20+.
@@ -85,7 +92,7 @@ gh-runner --repo owner/name
 2. asks npm what version is published and bumps the **patch** digit past it;
 3. commits that bump to `main` as `Release vX.Y.Z`;
 4. publishes with [npm provenance](https://docs.npmjs.com/generating-provenance-statements);
-5. cuts a `vX.Y.Z` GitHub release with generated notes.
+5. cuts a `vX.Y.Z` GitHub release with generated notes, and attaches `docker-compose.yml` (with `GH_RUNNER_VERSION` pinned to `X.Y.Z`) and `gh-runner-setup-prompt.md`.
 
 Merging never moves the major or minor. Those stay where you put them, and there are two ways to put them:
 
@@ -98,7 +105,7 @@ Nothing reads commit messages. An earlier version of this workflow looked for a 
 
 It runs as three jobs, and the split is the point. `npm ci` and the test suite execute a few hundred third-party packages' code, and `NPM_TOKEN` would be readable by any one of them if it shared a job with them. So **`build` has no secrets**, and **`publish` installs nothing** — it publishes the tarball `build` already packed, which runs no lifecycle scripts. `token` goes first and does nothing but check the secret isn't empty, so a missing one fails in seconds instead of after a full build.
 
-Only changes under `packages/gh-runner` (plus `package-lock.json`) trigger a release, so landing work on the landing page or the root README mints nothing. The bump commit is pushed with `GITHUB_TOKEN`, which by design starts no further workflow runs — a release can't set off another release.
+Only changes under `packages/gh-runner` (plus `package-lock.json`) trigger a release. That includes the compose file and the setup prompt, so editing either ships a new release, so landing work on the landing page or the root README mints nothing. The bump commit is pushed with `GITHUB_TOKEN`, which by design starts no further workflow runs — a release can't set off another release.
 
 **If `main` is protected**, allow the GitHub Actions bot to push to it, or the workflow stops before publishing and says so. Bumping the manifest by hand in the PR is the way through otherwise.
 

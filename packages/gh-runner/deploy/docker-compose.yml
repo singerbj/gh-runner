@@ -1,0 +1,76 @@
+# gh-runner as an always-on Linux runner: `docker compose up -d` on any server
+# with Docker, or paste into Coolify as a "Docker Compose Empty" resource.
+#
+# gh-runner is the container's main process, so the runner is online for as
+# long as the container is up, is restarted with it, and deregisters itself
+# when it stops. Every GitHub release attaches a copy of this file with
+# GH_RUNNER_VERSION pinned to that release.
+#
+# Required (Coolify's Environment Variables tab, or a .env file next to this):
+#   GH_TOKEN          fine-grained token for the repo: Administration, Actions
+#                     and Variables read/write (Metadata read is automatic)
+#   GH_RUNNER_REPO    owner/name. Must be private; gh-runner refuses public repos
+# Optional:
+#   GH_RUNNER_NAME    runner name and container hostname (default: gh-runner-docker)
+#   GH_RUNNER_LABELS  extra labels, comma-separated
+#   GH_RUNNER_VERSION @singerbj/gh-runner version to install (default: latest)
+#
+# Every CI job on this runner can read GH_TOKEN, so use a token scoped to this
+# one repo. Jobs get no Docker socket: `docker build`, `services:` and
+# `container:` jobs won't run here, and nothing on the host is reachable.
+
+services:
+  gh-runner:
+    image: node:lts
+    restart: unless-stopped
+    hostname: ${GH_RUNNER_NAME:-gh-runner-docker}
+    # tini as PID 1: reaps the processes CI jobs leave behind and passes
+    # SIGTERM on, so gh-runner deregisters itself when the container stops.
+    init: true
+    stop_grace_period: 60s
+    environment:
+      GH_TOKEN: ${GH_TOKEN}
+      GH_RUNNER_REPO: ${GH_RUNNER_REPO}
+      GH_RUNNER_NAME: ${GH_RUNNER_NAME:-gh-runner-docker}
+      GH_RUNNER_LABELS: ${GH_RUNNER_LABELS:-}
+      GH_RUNNER_VERSION: ${GH_RUNNER_VERSION:-latest}
+    volumes:
+      # The runner tarball cache and job workspaces survive restarts and redeploys.
+      - gh-runner-home:/home/node
+    entrypoint: ["bash", "-euo", "pipefail", "-c"]
+    command:
+      - |
+        if [ -z "$${GH_TOKEN:-}" ] || [ -z "$${GH_RUNNER_REPO:-}" ]; then
+          echo "gh-runner: set GH_TOKEN and GH_RUNNER_REPO (owner/name)" >&2
+          sleep 30
+          exit 1
+        fi
+
+        # The GitHub CLI (node:lts already has git, curl and the ICU the runner needs).
+        # Skipped on a plain restart, where the container's filesystem is kept.
+        if ! command -v gh >/dev/null; then
+          install -d -m 755 /etc/apt/keyrings
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+            -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+            > /etc/apt/sources.list.d/github-cli.list
+          apt-get update
+          apt-get install -y --no-install-recommends gh
+          rm -rf /var/lib/apt/lists/*
+        fi
+
+        npm install -g --no-fund --no-audit "@singerbj/gh-runner@$${GH_RUNNER_VERSION}"
+        chown -R node:node /home/node
+
+        args=(linux --repo "$${GH_RUNNER_REPO}" --name "$${GH_RUNNER_NAME}" --no-fix-workflows)
+        if [ -n "$${GH_RUNNER_LABELS}" ]; then
+          args+=(--labels "$${GH_RUNNER_LABELS}")
+        fi
+
+        # The actions runner refuses to run as root, so drop to the image's
+        # "node" user (uid 1000) and hand it the process.
+        exec setpriv --reuid=node --regid=node --init-groups \
+          env HOME=/home/node gh-runner "$${args[@]}"
+
+volumes:
+  gh-runner-home:

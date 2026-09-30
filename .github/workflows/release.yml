@@ -346,3 +346,28 @@ jobs:
             --title "$TAG" \
             --generate-notes \
             --target "$(git rev-parse HEAD)"
+
+      # Every release carries the Docker Compose deployment and the AI setup
+      # prompt, so .../releases/latest/download/docker-compose.yml is always
+      # the newest. The compose copy installs the version it was released
+      # with rather than whatever npm calls latest the day it's deployed.
+      # --clobber makes a re-run replace them instead of failing.
+      - name: Attach the compose file and setup prompt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          sed "s/\${GH_RUNNER_VERSION:-latest}/\${GH_RUNNER_VERSION:-$VERSION}/g" \
+            packages/gh-runner/deploy/docker-compose.yml > release-assets/docker-compose.yml
+          if ! grep -qF "\${GH_RUNNER_VERSION:-$VERSION}" release-assets/docker-compose.yml; then
+            echo "::error::couldn't pin GH_RUNNER_VERSION in docker-compose.yml — its default no longer reads \${GH_RUNNER_VERSION:-latest}."
+            exit 1
+          fi
+          cp packages/gh-runner/prompts/setup-repo.md release-assets/gh-runner-setup-prompt.md
+
+          gh release upload "v$VERSION" \
+            release-assets/docker-compose.yml \
+            release-assets/gh-runner-setup-prompt.md \
+            --clobber

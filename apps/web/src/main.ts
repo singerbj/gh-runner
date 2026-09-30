@@ -1,3 +1,12 @@
+import compose from "../../../packages/gh-runner/deploy/docker-compose.yml?raw";
+import prompt from "../../../packages/gh-runner/prompts/setup-repo.md?raw";
+
+/**
+ * The compose file and setup prompt are imported from the files that ship with
+ * each release, so the page can't show a copy that has drifted from them.
+ */
+const EMBEDS: Readonly<Record<string, string>> = { compose, prompt };
+
 /**
  * Copy-to-clipboard for the install commands. Falls back to a hidden textarea
  * where the async Clipboard API isn't available (non-secure contexts, older
@@ -36,7 +45,8 @@ async function writeToClipboard(text: string): Promise<boolean> {
 
 function wireCopyButton(button: HTMLButtonElement): void {
   const label = button.querySelector<HTMLElement>(".copy-state");
-  const command = button.dataset["copy"];
+  const embed = button.dataset["copyEmbed"];
+  const command = embed ? EMBEDS[embed] : button.dataset["copy"];
   if (!label || !command) return;
 
   let timer: number | undefined;
@@ -54,5 +64,9 @@ function wireCopyButton(button: HTMLButtonElement): void {
     });
   });
 }
+
+document.querySelectorAll<HTMLElement>("[data-embed]").forEach((element) => {
+  element.textContent = EMBEDS[element.dataset["embed"] ?? ""] ?? "";
+});
 
 document.querySelectorAll<HTMLButtonElement>("button.copy-command").forEach(wireCopyButton);

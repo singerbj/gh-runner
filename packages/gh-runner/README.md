@@ -277,6 +277,49 @@ Only GitHub-hosted jobs get repointed. A job already asking for `self-hosted` wi
 | `-h, --help`             | Show help                                                         |
 | `-v, --version`          | Show version                                                      |
 
+## Keeping a runner online with Docker Compose
+
+`gh-runner` normally lives as long as the terminal it runs in. For a machine that should always be ready to take jobs (a home lab box, a VPS, a [Coolify](https://coolify.io) server), run it with the Docker Compose file in [`deploy/docker-compose.yml`](deploy/docker-compose.yml). `gh-runner` is the container's main process, so the runner is online whenever the container is up, comes back with it after a crash or reboot, and deregisters itself when the container stops.
+
+Every GitHub release attaches a copy with `GH_RUNNER_VERSION` pinned to that release, so this URL is always the newest:
+
+```bash
+curl -fsSLO https://github.com/singerbj/gh-runner/releases/latest/download/docker-compose.yml
+printf 'GH_TOKEN=%s\nGH_RUNNER_REPO=%s\n' "github_pat_…" "you/your-repo" > .env
+docker compose up -d
+docker compose logs -f      # wait for "Runner is live"
+```
+
+On **Coolify**: add a **Docker Compose Empty** resource, paste the file, set `GH_TOKEN` and `GH_RUNNER_REPO` under **Environment Variables**, and deploy. It needs no domain or port.
+
+| Variable            | Required | What it is                                                                                                        |
+| ------------------- | -------- | ----------------------------------------------------------------------------------------------------------------- |
+| `GH_TOKEN`          | yes      | A fine-grained token for the one repo, with **Administration**, **Actions** and **Variables** read/write          |
+| `GH_RUNNER_REPO`    | yes      | `owner/name`. Must be private                                                                                     |
+| `GH_RUNNER_NAME`    | no       | Runner name and container hostname (default `gh-runner-docker`)                                                   |
+| `GH_RUNNER_LABELS`  | no       | Extra labels, comma-separated                                                                                     |
+| `GH_RUNNER_VERSION` | no       | The `@singerbj/gh-runner` version to install (default: the release the file came from, `latest` in the repo copy) |
+
+The container starts from `node:lts`, installs `gh` and `gh-runner`, then runs `gh-runner linux --repo … --no-fix-workflows` as the image's unprivileged `node` user. Things to know:
+
+- **Linux only.** It's a Linux container, so it serves `gh-runner-linux` (and `gh-runner`).
+- **No Docker socket, no host mounts.** Jobs can't reach anything else on the server, but `docker build`, `services:` and `container:` jobs won't run there either.
+- **Every job can read `GH_TOKEN`.** The runner passes its environment on to the jobs it runs. Scope the token to the one repo, and only use this on a repo where you trust everyone who can push.
+- **The workflows need the fallback `runs-on` first.** The container has no checkout of your repo, so it can't audit the workflows or open the fix PR. Run `npx @singerbj/gh-runner` in the repo once, or use the AI setup prompt below.
+- **Stopping it cleans up.** `docker compose down` (or a Coolify stop) sends SIGTERM, and `gh-runner` deregisters the runner and deletes any variables it set before the 60-second grace period runs out.
+
+## Setting a repo up with an AI agent
+
+[`prompts/setup-repo.md`](prompts/setup-repo.md) is a prompt for Claude Code, Copilot, Cursor or any other coding agent working in your repo. It makes the same edit as the workflow-fix PR above, by hand:
+
+- checks the repo is private, and stops if it isn't,
+- rewrites each GitHub-hosted `runs-on` to `${{ vars.GH_RUNNER_<OS> || '<original>' }}`, using exactly the shape `gh-runner` recognises, and leaves self-hosted, matrix-expression and runner-group jobs alone,
+- lists the jobs that may not work on a gh-runner machine (Docker, services, a particular CPU),
+- adds a short "Self-hosted fallback" section to your README, and
+- opens a PR with a table of every job it changed or skipped.
+
+Every release attaches it as `gh-runner-setup-prompt.md` too, and the [landing page](https://singerbj.github.io/gh-runner/#ai-setup) has a copy button. The test suite checks each example rewrite in the prompt against the expression `gh-runner` itself writes, so the two can't drift apart.
+
 ## Safety
 
 **A native runner executes CI jobs as you.** Not sandboxed, not a separate account: whoever can cause a job to run on the `gh-runner` label gets your shell, your home directory, your SSH keys, and your `gh` login for as long as the command is up. Everything below follows from that.
@@ -294,7 +337,7 @@ The runner itself is checked before it is trusted:
 
 And nothing is left behind:
 
-- The runner lives exactly as long as the command: no daemon, no service, nothing that survives the terminal.
+- The runner lives exactly as long as the command: no daemon, no service, nothing that survives the terminal. (The [Docker Compose deployment](#keeping-a-runner-online-with-docker-compose) keeps the command running on purpose. Stopping the container is its Ctrl+C.)
 - `--once` registers it as **ephemeral**, so GitHub retires it after a single job.
 - Containerised runners isolate the job from your filesystem entirely: no volumes, no Docker socket, nothing mounted.
 - A native runner's working directory is a fresh `mktemp -d`, removed on exit; a containerised one writes nothing to the host at all.
@@ -305,6 +348,7 @@ And nothing is left behind:
 
 - **`config.sh --token` puts the registration token in argv.** The native path has no other way to pass it, so on a shared machine another local account can read it for the second or two registration takes. It expires in an hour and only ever grants "register a runner on this repo". The container path doesn't have this problem.
 - **A job is only as isolated as the mode you chose.** Native means none.
+- **With `GH_TOKEN` in the environment, jobs can read it.** The runner hands its environment to every job, so a token used to log `gh` in that way (as the Docker Compose deployment does) is readable by any workflow that runs here. Scope it to the one repo.
 
 ## Programmatic use
 

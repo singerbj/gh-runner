@@ -6,6 +6,9 @@ on:
     # The site is built from these; a change anywhere else can't affect it.
     paths:
       - "apps/web/**"
+      # The page embeds the compose file and the setup prompt.
+      - "packages/gh-runner/deploy/**"
+      - "packages/gh-runner/prompts/**"
       - "package.json"
       - "package-lock.json"
       - "turbo.json"

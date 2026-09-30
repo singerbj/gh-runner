@@ -3,24 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  HOSTED_PROBE_RUNS_ON,
-  PROBE_RUNS_ON_VAR,
-  SELF_HOSTED_ONLY_PROBE_RUNS_ON,
-  SELF_HOSTED_PROBE_RUNS_ON,
-} from "../src/constants.js";
-import {
-  PROBE_JOB_ID,
-  applyWorkflowFix,
   classifyTarget,
   hostedRunnerOs,
   inspectWorkflows,
   parseRunsOn,
   parseWorkflow,
-  readProbeFallback,
   readRunsOnLabels,
-  usesProbeVariable,
 } from "../src/workflows.js";
-import type { RunsOnTarget, WorkflowFixPlan } from "../src/workflows.js";
+import type { RunsOnTarget } from "../src/workflows.js";
+import { LEGACY_PROBE } from "./support/legacy.js";
 
 const RUNNER_LABELS = ["self-hosted", "Linux", "X64", "gh-runner", "gh-runner-linux", "my-box"];
 
@@ -172,30 +163,6 @@ describe("readRunsOnLabels", () => {
   });
 });
 
-describe("readProbeFallback", () => {
-  const runsOn = (tail: string) =>
-    `\${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || ${tail} }}`;
-
-  it("reads both shapes the rewrite writes", () => {
-    expect(readProbeFallback(runsOn("'ubuntu-latest'"))).toEqual(["ubuntu-latest"]);
-    expect(readProbeFallback(runsOn(`fromJSON('["self-hosted","gh-runner-linux"]')`))).toEqual([
-      "self-hosted",
-      "gh-runner-linux",
-    ]);
-  });
-
-  it("unescapes the doubled quotes YAML expressions carry", () => {
-    expect(readProbeFallback(runsOn("'it''s-a-runner'"))).toEqual(["it's-a-runner"]);
-  });
-
-  it("returns null for anything it didn't write", () => {
-    expect(readProbeFallback(runsOn("github.event.inputs.runner"))).toBeNull();
-    expect(readProbeFallback(runsOn(`fromJSON('{"not":"a list"}')`))).toBeNull();
-    expect(readProbeFallback(runsOn("fromJSON('[oops')"))).toBeNull();
-    expect(readProbeFallback("${{ matrix.os }}")).toBeNull();
-  });
-});
-
 describe("classifyTarget", () => {
   const target = (labels: string[]): RunsOnTarget => ({
     file: "ci.yml",
@@ -237,6 +204,21 @@ describe("classifyTarget", () => {
   it("treats anything without self-hosted as GitHub-hosted", () => {
     expect(classifyTarget(target(["ubuntu-latest"]), [RUNNER_LABELS]).kind).toBe("hosted");
   });
+
+  it("treats a fixed job's label as self-hosted, though it doesn't say so", () => {
+    const fixed = {
+      ...target(["gh-runner-linux"]),
+      fallback: {
+        variable: "GH_RUNNER_LINUX",
+        label: "gh-runner-linux",
+        hosted: ["ubuntu-latest"],
+      },
+    };
+    expect(classifyTarget(fixed, [RUNNER_LABELS]).kind).toBe("match");
+    expect(classifyTarget({ ...fixed, labels: ["gh-runner-mac"] }, [RUNNER_LABELS]).kind).toBe(
+      "missing-labels",
+    );
+  });
 });
 
 describe("hostedRunnerOs", () => {
@@ -263,337 +245,6 @@ describe("hostedRunnerOs", () => {
     expect(hostedRunnerOs(["ubuntufan"])).toBeNull();
     // Two images that disagree: nothing sensible to pick.
     expect(hostedRunnerOs(["macos-14", "ubuntu-latest"])).toBeNull();
-  });
-});
-
-describe("applyWorkflowFix", () => {
-  const ACTION = "singerbj/gh-runner/actions/pick-runner@abc123";
-  const KEYS = { osx: "mac", linux: "linux", win: "windows" } as const;
-  const LABELS = {
-    osx: "gh-runner-mac",
-    linux: "gh-runner-linux",
-    win: "gh-runner-windows",
-  } as const;
-
-  /** Mirrors what proposeWorkflowFix builds: one fix per hosted job. */
-  const planFor = (
-    source: string,
-    only?: readonly string[],
-    extra: Partial<WorkflowFixPlan> = {},
-  ): WorkflowFixPlan => ({
-    jobId: PROBE_JOB_ID,
-    actionRef: ACTION,
-    fixes: parseRunsOn(source, "ci.yml")
-      .filter((target) => target.labels.length > 0 && (!only || only.includes(target.job)))
-      .map((target) => {
-        const os = hostedRunnerOs(target.labels) ?? "linux";
-        return { target, key: KEYS[os], labels: ["self-hosted", LABELS[os]] };
-      }),
-    ...extra,
-  });
-
-  it("prefers each platform's own runner and keeps the hosted one as the fallback", () => {
-    const source = [
-      "jobs:",
-      "  mac:",
-      "    runs-on: macos-14",
-      "  linux:",
-      "    runs-on: ubuntu-latest",
-    ].join("\n");
-    const fixed = applyWorkflowFix(source, planFor(source));
-
-    expect(fixed).toContain(
-      "runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).mac || 'macos-14' }}",
-    );
-    expect(fixed).toContain(
-      "runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || 'ubuntu-latest' }}",
-    );
-    expect(fixed).toContain('"mac": { "labels": ["self-hosted","gh-runner-mac"]');
-    expect(fixed).toContain('"fallback": "ubuntu-latest" }');
-  });
-
-  it("adds the probe job once, above the jobs that read it", () => {
-    const source = ["jobs:", "  a:", "    runs-on: ubuntu-latest"].join("\n");
-    const fixed = applyWorkflowFix(source, planFor(source));
-
-    expect(fixed.indexOf("gh-runner-check:")).toBeLessThan(fixed.indexOf("  a:"));
-    expect(fixed.match(/gh-runner-check:/g)).toHaveLength(1);
-    expect(fixed).toContain(`- uses: ${ACTION}`);
-    expect(fixed).toContain("contents: read");
-  });
-
-  it("adds needs in whichever shape the job already uses", () => {
-    const source = [
-      "jobs:",
-      "  none:",
-      "    runs-on: ubuntu-latest",
-      "  scalar:",
-      "    needs: none",
-      "    runs-on: ubuntu-latest",
-      "  flow:",
-      "    needs: [none, scalar]",
-      "    runs-on: ubuntu-latest",
-      "  block:",
-      "    needs:",
-      "      - none",
-      "    runs-on: ubuntu-latest",
-    ].join("\n");
-    const fixed = applyWorkflowFix(source, planFor(source));
-
-    expect(fixed).toContain("  none:\n    needs: [gh-runner-check]\n    runs-on:");
-    expect(fixed).toContain("needs: [none, gh-runner-check]");
-    expect(fixed).toContain("needs: [none, scalar, gh-runner-check]");
-    expect(fixed).toContain("needs:\n      - none\n      - gh-runner-check");
-  });
-
-  it("still parses, and reads back as asking for this runner", () => {
-    const source = ["jobs:", "  a:", "    runs-on:", "      - ubuntu-latest", "    steps: []"].join(
-      "\n",
-    );
-    const fixed = applyWorkflowFix(source, planFor(source));
-    const reparsed = parseWorkflow(fixed, "ci.yml");
-
-    expect(reparsed.error).toBeUndefined();
-    const job = reparsed.targets.find((target) => target.job === "a");
-    expect(job?.labels).toEqual(["self-hosted", "gh-runner-linux"]);
-    expect(job?.unresolved).toBeUndefined();
-    expect(classifyTarget(job as RunsOnTarget, [RUNNER_LABELS]).kind).toBe("match");
-  });
-
-  it("joins a job to the probe that is already there instead of adding a second", () => {
-    const source = ["jobs:", "  a:", "    runs-on: ubuntu-latest"].join("\n");
-    const once = applyWorkflowFix(source, planFor(source));
-
-    // A macOS job added after the first fix.
-    const grown = `${once}\n  mac:\n    runs-on: macos-14\n`;
-    const twice = applyWorkflowFix(grown, planFor(grown, ["mac"]));
-
-    expect(twice.match(/gh-runner-check:/g)).toHaveLength(1);
-    expect(twice).toContain('"linux": { "labels": ["self-hosted","gh-runner-linux"]');
-    expect(twice).toContain('"mac": { "labels": ["self-hosted","gh-runner-mac"]');
-    expect(parseWorkflow(twice, "ci.yml").error).toBeUndefined();
-  });
-
-  it("goes above the comment written about the first job, not below it", () => {
-    const source = [
-      "jobs:",
-      "  # this one is expensive",
-      "  a:",
-      "    runs-on: ubuntu-latest",
-    ].join("\n");
-    const fixed = applyWorkflowFix(source, planFor(source));
-
-    expect(fixed).toContain("  # this one is expensive\n  a:");
-    expect(fixed.indexOf("gh-runner-check:")).toBeLessThan(
-      fixed.indexOf("# this one is expensive"),
-    );
-  });
-
-  it("preserves comments and every other line", () => {
-    const source = [
-      "# top comment",
-      "name: CI",
-      "",
-      "jobs:",
-      "  build: # the important one",
-      "    runs-on: ubuntu-latest # hosted for now",
-      "    steps:",
-      "      - run: make # build it",
-    ].join("\n");
-    const fixed = applyWorkflowFix(source, planFor(source));
-
-    expect(fixed).toContain("# top comment");
-    expect(fixed).toContain("  build: # the important one");
-    expect(fixed).toContain("}} # hosted for now");
-    expect(fixed).toContain("      - run: make # build it");
-  });
-
-  it("leaves untargeted jobs alone", () => {
-    const source = [
-      "jobs:",
-      "  keep:",
-      "    runs-on: ubuntu-latest",
-      "  move:",
-      "    runs-on: ubuntu-latest",
-    ].join("\n");
-    const fixed = applyWorkflowFix(source, planFor(source, ["move"]));
-
-    expect(fixed).toContain("  keep:\n    runs-on: ubuntu-latest");
-    expect(fixed).toContain("  move:\n    needs: [gh-runner-check]");
-  });
-
-  it("pins the probe job to a hosted runner by default", () => {
-    const source = ["jobs:", "  a:", "    runs-on: ubuntu-latest"].join("\n");
-    const fixed = applyWorkflowFix(source, planFor(source));
-
-    expect(fixed).toContain(`    runs-on: ${HOSTED_PROBE_RUNS_ON}\n`);
-    expect(fixed).not.toContain(PROBE_RUNS_ON_VAR);
-  });
-
-  it("lets the probe job pick its own runner from the variable", () => {
-    const source = ["jobs:", "  a:", "    runs-on: ubuntu-latest"].join("\n");
-    const fixed = applyWorkflowFix(
-      source,
-      planFor(source, undefined, { probeRunsOn: SELF_HOSTED_PROBE_RUNS_ON }),
-    );
-
-    expect(fixed).toContain(`    runs-on: ${SELF_HOSTED_PROBE_RUNS_ON}\n`);
-
-    // The expression carries both quote characters, so the plain scalar it is
-    // written as has to survive a round trip.
-    const reparsed = parseWorkflow(fixed, "ci.yml");
-    expect(reparsed.error).toBeUndefined();
-    const probe = reparsed.targets.find((target) => target.job === PROBE_JOB_ID);
-    expect(probe?.unresolved).toBe(SELF_HOSTED_PROBE_RUNS_ON);
-    expect(usesProbeVariable(probe as RunsOnTarget)).toBe(true);
-  });
-
-  it("brings an existing probe job's runner in line when the fix is re-run", () => {
-    const source = ["jobs:", "  a:", "    runs-on: ubuntu-latest"].join("\n");
-    const hosted = applyWorkflowFix(source, planFor(source));
-
-    // A second job, and this time the probe is asked to run here too.
-    const grown = `${hosted}\n  mac:\n    runs-on: macos-14\n`;
-    const moved = applyWorkflowFix(
-      grown,
-      planFor(grown, ["mac"], { probeRunsOn: SELF_HOSTED_PROBE_RUNS_ON }),
-    );
-
-    expect(moved).toContain(`    runs-on: ${SELF_HOSTED_PROBE_RUNS_ON}\n`);
-    expect(moved.match(/gh-runner-check:/g)).toHaveLength(1);
-    expect(parseWorkflow(moved, "ci.yml").error).toBeUndefined();
-
-    // And back again, without a job left to repoint.
-    const back = applyWorkflowFix(moved, { ...planFor(moved, []), fixes: [] });
-    expect(back).toContain(`    runs-on: ${HOSTED_PROBE_RUNS_ON}\n`);
-    expect(back).not.toContain(PROBE_RUNS_ON_VAR);
-  });
-
-  describe("with noHostedFallback", () => {
-    const NO_HOSTED = {
-      probeRunsOn: SELF_HOSTED_ONLY_PROBE_RUNS_ON,
-      noHostedFallback: true,
-    } as const;
-
-    /**
-     * The invariant this mode exists for: no job can be scheduled onto a
-     * GitHub-hosted runner. That is a claim about `runs-on` and about the
-     * fallbacks the probe resolves — not about the file's bytes, which still
-     * carry the replaced runner under `"hosted"` so a later run can restore it.
-     */
-    const expectNothingHosted = (yaml: string) => {
-      const scheduled = [
-        ...yaml.split("\n").filter((line) => line.trim().startsWith("runs-on:")),
-        ...(yaml.match(/"fallback": [^,}]+/g) ?? []),
-      ].join("\n");
-      expect(scheduled).not.toMatch(/ubuntu|macos|windows/i);
-    };
-
-    it("names no GitHub-hosted runner anywhere", () => {
-      const source = [
-        "jobs:",
-        "  mac:",
-        "    runs-on: macos-14",
-        "  linux:",
-        "    runs-on: ubuntu-latest",
-      ].join("\n");
-      const fixed = applyWorkflowFix(source, planFor(source, undefined, NO_HOSTED));
-
-      // Both halves of the rewrite agree: the `||` and the probe's own spec.
-      expect(fixed).toContain(
-        "runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || " +
-          'fromJSON(\'["self-hosted","gh-runner-linux"]\') }}',
-      );
-      expect(fixed).toContain('"fallback": ["self-hosted","gh-runner-linux"]');
-      expect(fixed).toContain(`    runs-on: ${SELF_HOSTED_ONLY_PROBE_RUNS_ON}\n`);
-
-      expect(parseWorkflow(fixed, "ci.yml").error).toBeUndefined();
-      // The whole point: nothing left for GitHub to bill, or to refuse to start.
-      expectNothingHosted(fixed);
-      expect(fixed).not.toContain(PROBE_RUNS_ON_VAR);
-    });
-
-    it("records the runner it replaced, so the fallback can be put back", () => {
-      const source = ["jobs:", "  a:", "    runs-on: ubuntu-22.04"].join("\n");
-      const queued = applyWorkflowFix(source, planFor(source, undefined, NO_HOSTED));
-      expect(queued).toContain('"hosted": "ubuntu-22.04"');
-
-      const restored = applyWorkflowFix(queued, { ...planFor(queued, []), fixes: [] });
-      expect(restored).toContain(
-        "runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || 'ubuntu-22.04' }}",
-      );
-      expect(restored).toContain('"fallback": "ubuntu-22.04"');
-      expect(restored).not.toContain('"hosted"');
-      expect(restored).toContain(`    runs-on: ${HOSTED_PROBE_RUNS_ON}\n`);
-    });
-
-    it("converts jobs an earlier run repointed, not just the probe", () => {
-      const source = [
-        "jobs:",
-        "  a:",
-        "    runs-on: ubuntu-latest",
-        "  mac:",
-        "    runs-on: macos-14",
-      ].join("\n");
-      // Fixed once the ordinary way, so both jobs already read the probe.
-      const withFallbacks = applyWorkflowFix(source, planFor(source));
-      expect(withFallbacks).toContain("|| 'ubuntu-latest' }}");
-
-      // Re-run with the flag: nothing left to repoint, everything to convert.
-      const queued = applyWorkflowFix(withFallbacks, {
-        ...planFor(withFallbacks, []),
-        fixes: [],
-        ...NO_HOSTED,
-      });
-
-      expectNothingHosted(queued);
-      expect(queued).toContain('|| fromJSON(\'["self-hosted","gh-runner-linux"]\') }}');
-      expect(queued).toContain('|| fromJSON(\'["self-hosted","gh-runner-mac"]\') }}');
-      expect(queued.match(/gh-runner-check:/g)).toHaveLength(1);
-      expect(parseWorkflow(queued, "ci.yml").error).toBeUndefined();
-    });
-
-    it("leaves a hand-edited fallback alone rather than guessing at it", () => {
-      const source = ["jobs:", "  a:", "    runs-on: ubuntu-latest"].join("\n");
-      const fixed = applyWorkflowFix(source, planFor(source));
-      const edited = fixed.replace("|| 'ubuntu-latest' }}", "|| github.event.inputs.runner }}");
-
-      const queued = applyWorkflowFix(edited, {
-        ...planFor(edited, []),
-        fixes: [],
-        ...NO_HOSTED,
-      });
-      expect(queued).toContain("|| github.event.inputs.runner }}");
-    });
-
-    it("re-run with the same plan changes nothing", () => {
-      const source = ["jobs:", "  a:", "    runs-on: ubuntu-latest"].join("\n");
-      const queued = applyWorkflowFix(source, planFor(source, undefined, NO_HOSTED));
-      expect(applyWorkflowFix(queued, { ...planFor(queued, []), fixes: [], ...NO_HOSTED })).toBe(
-        queued,
-      );
-    });
-  });
-
-  it("is a no-op with nothing to repoint and no probe job to bring in line", () => {
-    const source = ["jobs:", "  a:", "    runs-on: [self-hosted, gh-runner]"].join("\n");
-    expect(applyWorkflowFix(source, { ...planFor(source, []), fixes: [] })).toBe(source);
-  });
-
-  it("does not shadow a job that already owns the name", () => {
-    const source = [
-      "jobs:",
-      "  gh-runner-check:",
-      "    runs-on: ubuntu-latest",
-      "    steps: []",
-      "  a:",
-      "    runs-on: ubuntu-latest",
-    ].join("\n");
-    const fixed = applyWorkflowFix(source, planFor(source, ["a"]));
-
-    expect(fixed).toContain("gh-runner-check-2:");
-    expect(fixed).toContain("needs: [gh-runner-check-2]");
-    expect(parseWorkflow(fixed, "ci.yml").error).toBeUndefined();
   });
 });
 
@@ -654,30 +305,33 @@ describe("inspectWorkflows", () => {
     expect(report.matches.map((t) => t.job)).toEqual(["b"]);
   });
 
-  it("says whether a probe job picks its own runner, and leaves it out of unknown", async () => {
-    const source = ["jobs:", "  a:", "    runs-on: ubuntu-latest"].join("\n");
-    const plan = {
-      jobId: PROBE_JOB_ID,
-      actionRef: "singerbj/gh-runner/actions/pick-runner@abc123",
-      fixes: parseRunsOn(source, "ci.yml")
-        .filter((target) => target.job === "a")
-        .map((target) => ({ target, key: "linux", labels: ["self-hosted", "gh-runner-linux"] })),
-    };
-
-    await write("ci.yml", applyWorkflowFix(source, plan));
-    const hosted = await inspectWorkflows(root, [RUNNER_LABELS]);
-    expect(hosted.selfHostedProbe).toBe(false);
-    // Hosted on purpose, and its runs-on is an expression by design.
-    expect(hosted.hosted.map((t) => t.job)).toEqual([]);
-    expect(hosted.unknown.map((t) => t.job)).toEqual([]);
-
+  it("counts a fixed job as this runner's, and says which files read a variable", async () => {
     await write(
       "ci.yml",
-      applyWorkflowFix(source, { ...plan, probeRunsOn: SELF_HOSTED_PROBE_RUNS_ON }),
+      "jobs:\n  a:\n    runs-on: ${{ vars.GH_RUNNER_LINUX || 'ubuntu-latest' }}\n",
     );
-    const moved = await inspectWorkflows(root, [RUNNER_LABELS]);
-    expect(moved.selfHostedProbe).toBe(true);
-    expect(moved.unknown.map((t) => t.job)).toEqual([]);
+    await write("lint.yml", "jobs:\n  b:\n    runs-on: ubuntu-latest\n");
+
+    const report = await inspectWorkflows(root, [RUNNER_LABELS]);
+    expect(report.matches.map((t) => t.job)).toEqual(["a"]);
+    expect(report.matches[0]?.fallback).toEqual({
+      variable: "GH_RUNNER_LINUX",
+      label: "gh-runner-linux",
+      hosted: ["ubuntu-latest"],
+    });
+    expect(report.hosted.map((t) => t.job)).toEqual(["b"]);
+    expect(report.fallbackFiles).toEqual([".github/workflows/ci.yml"]);
+    expect(report.legacyProbe).toBe(false);
+  });
+
+  it("notices a probe job an older version left, and keeps it out of hosted and unknown", async () => {
+    await write("ci.yml", LEGACY_PROBE);
+    const report = await inspectWorkflows(root, [RUNNER_LABELS]);
+
+    expect(report.legacyProbe).toBe(true);
+    expect(report.hosted.map((t) => t.job)).toEqual([]);
+    expect(report.unknown.map((t) => t.job)).toEqual([]);
+    expect(report.matches.map((t) => t.job)).toEqual(["build"]);
   });
 
   it("reads every workflow file, .yaml included", async () => {

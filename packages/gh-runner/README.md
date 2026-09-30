@@ -177,222 +177,105 @@ The workflows are parsed with a real YAML parser ([`yaml`](https://www.npmjs.com
 When **no** job targets this runner, it offers to open a pull request:
 
 ```
-Update 3 jobs to self-hosted runs-on (gh-runner-linux, gh-runner-mac) and open a pull request? [y/N] y
+Let 2 jobs use gh-runner-linux, gh-runner-mac when GitHub-hosted runners can't start, and open a pull request? [y/N] y
 ==> Preparing a workflow fix on gh-runner/target-self-hosted-9f3c1ab7...
-    ✓ .github/workflows/ci.yml → build prefers gh-runner-linux, else ubuntu-latest
-    ✓ .github/workflows/ci.yml → bundle prefers gh-runner-mac, else macos-14
+    ✓ .github/workflows/ci.yml → build stays on ubuntu-latest — gh-runner-linux when out of minutes (GH_RUNNER_LINUX)
+    ✓ .github/workflows/ci.yml → bundle stays on macos-14 — gh-runner-mac when out of minutes (GH_RUNNER_MAC)
       no gh-runner-mac runner in this session — start one with: gh-runner mac
     Pull request opened: https://github.com/octocat/thing/pull/42
 ```
 
-**A repointed job still runs when nobody is home.** It uses your machine while a runner is online and the runner it already had when none is — so merging the PR can't leave CI waiting on hardware nobody started:
+**Every job keeps running on GitHub-hosted runners.** The PR changes one line per job:
 
 ```yaml
 jobs:
-  gh-runner-check:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      runners: "${{ steps.pick.outputs.runners }}"
-    steps:
-      - uses: singerbj/gh-runner/actions/pick-runner@<sha> # v1.0.3
-        id: pick
-        with:
-          targets: |
-            {
-              "linux": { "labels": ["self-hosted","gh-runner-linux"], "fallback": "ubuntu-latest" }
-            }
-
   build:
-    needs: [gh-runner-check]
-    runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || 'ubuntu-latest' }}
+    runs-on: ${{ vars.GH_RUNNER_LINUX || 'ubuntu-latest' }}
+  bundle:
+    runs-on: ${{ vars.GH_RUNNER_MAC || 'macos-14' }}
 ```
 
-**Each job keeps the platform it already had.** The image in its current `runs-on` picks the label, so a `macos-14` job asks for `gh-runner-mac` and can only ever land on a Mac — never on whichever machine happens to be free. `ubuntu-*` gets `gh-runner-linux`, `windows-*` gets `gh-runner-windows`, and every variant of those names is understood (`macos-13-xlarge`, `ubuntu-24.04-arm`, `ubuntu-latest-8-cores`). Only a job whose runner name says nothing about an OS — a larger runner you named yourself — falls back to the generic `gh-runner`, which any registered machine answers. The same name is also its fallback, so a macOS job that can't find your Mac goes back to `macos-14` rather than to a Linux box.
+With the variable unset — which it is, unless the repo is out of minutes _and_ a `gh-runner` is up — that's exactly the `runs-on` the job had before. Merging the PR changes nothing about where CI runs, and nothing in it needs a self-hosted runner, a secret, or an extra job.
 
-If a label has no runner in this session, it says so and tells you which command starts one — but those jobs run on GitHub in the meantime rather than queueing.
+**Your machine only takes over when GitHub-hosted runners can't start** — the repo is out of included minutes, over a spending limit, or a payment failed. While `gh-runner` is running it watches the repo's runs, and when GitHub refuses to start a job for billing reasons (a job that failed on no runner, with no steps, annotated _"The job was not started because recent account payments have failed or your spending limit needs to be increased"_) it:
 
-### How a workflow knows the runner is up
+1. sets `GH_RUNNER_LINUX=gh-runner-linux` — one variable per label it serves — so every job from then on resolves to this machine, and
+2. re-runs the refused runs from the last 24 hours, which now land here instead. Never a run from a fork: re-running someone else's code on your machine stays a decision for a person.
 
-`runs-on` can't call an API, and the one that lists self-hosted runners needs repo admin — a permission no workflow's `GITHUB_TOKEN` can be granted. So the runner announces itself instead.
+It reads GitHub's own verdict rather than doing arithmetic on billing data, so included minutes, budgets, spending limits and failed payments are all handled the same way, and it needs no billing scope.
 
-While `gh-runner` is up it publishes a ref per label, `refs/gh-runner/online/<label>/<unix-seconds>`, and re-stamps it every two minutes. The `gh-runner-check` job reads those refs with nothing but `contents: read` and the built-in token — **no secret to create, no PAT to rotate, nothing to configure in the repo**. Markers are removed on exit, and one that stops being re-stamped is ignored after seven minutes, so a laptop that closes mid-session sends the next run back to GitHub-hosted instead of stranding it.
+**It hands everything back** — deletes the variables — when:
 
-The refs live outside `refs/heads` and `refs/tags`, so they never appear as branches or releases. Publishing them needs push access, which you already have; without it the runner still works and simply says the jobs will use their fallback.
+- a GitHub-hosted job succeeds again (a raised spending limit shows up in whichever workflows weren't rewritten),
+- a new month starts and the included minutes reset. If hosted runners are still unavailable — a spending limit rather than a quota — the first job of the month is refused, and the variables go straight back up with that run re-run,
+- **the session ends.** The variables mean "a gh-runner is here _and_ GitHub-hosted runners aren't", so they never outlive the machine that set them.
 
-The probe [fails open](../../actions/pick-runner). A missing token, an API error, a malformed input, or no runner online all resolve to the fallback runner, and the generated `runs-on` carries its own `|| 'ubuntu-latest'` in case the probe job produces nothing at all.
+What to expect:
+
+| Minutes left? | `gh-runner` running? | Jobs run on                                                                   |
+| ------------- | -------------------- | ----------------------------------------------------------------------------- |
+| yes           | either way           | GitHub-hosted, exactly as before                                              |
+| no            | yes                  | your machine — after at most one refused run, which is re-run here            |
+| no            | no                   | nowhere; GitHub refuses them. Start `gh-runner` and it re-runs the last day's |
+
+A session only sets variables for labels it serves, so a Linux box never pulls macOS jobs into a queue nothing will answer. Two machines serving the same label share its variable: the one that leaves takes it down, and the one still running puts it back on its next check, two minutes later. An API error changes nothing, in either direction.
+
+The one way a variable outlives its session is a kill too hard to clean up — `kill -9`, a power cut. Jobs for that label then wait for a runner instead of going to GitHub. The next `gh-runner` to start clears it on its first check; deleting it by hand is always safe too:
+
+```bash
+gh variable delete GH_RUNNER_LINUX
+```
+
+Setting a variable needs admin on the repo, the same rights registering a runner needs. Once the PR is merged a plain `npx @singerbj/gh-runner` is all it takes.
+
+**Each job keeps the platform it already had.** The image in its current `runs-on` picks the label, so a `macos-14` job moves to `gh-runner-mac` and can only ever land on a Mac. `ubuntu-*` gets `gh-runner-linux`, `windows-*` gets `gh-runner-windows`, and every variant of those names is understood (`macos-13-xlarge`, `ubuntu-24.04-arm`, `ubuntu-latest-8-cores`). Only a job whose runner name says nothing about an OS — a larger runner you named yourself — gets the generic `gh-runner` (variable `GH_RUNNER`), which any registered machine answers.
+
+[`.github/workflows/fallback-simulation.yml`](../../.github/workflows/fallback-simulation.yml) runs the whole cycle on every change against a mocked GitHub, and has GitHub's own expression engine resolve the `runs-on` above in both states.
+
+#### Why there's no job deciding this
+
+Earlier versions added a `gh-runner-check` job that chose each job's runner. Any job like that needs a runner of its own before anything else can be scheduled, and "GitHub won't start a hosted runner here" is precisely when it can't have one — the whole workflow fails with a runner sitting idle. `runs-on` can read repository variables before any runner is involved, so the decision is made outside Actions, by the machine about to take the work.
+
+Re-running the fix on a repo an older version fixed converts it: every job gets its variable, with the labels and hosted runner the old probe recorded, and the `gh-runner-check` job is removed. (A job that reads the probe's output somewhere the fix didn't write keeps it, and keeps working.) The old `--self-hosted-probe`, `--no-hosted-fallback` and `--hosted-first` flags are accepted and ignored.
+
+### Rewriting it yourself
 
 The rewrite happens in a throwaway [`git worktree`](https://git-scm.com/docs/git-worktree) checked out from your default branch — **your working tree, index, staged changes, and current branch are never touched**, even with work in flight. The worktree and its local branch are removed on every exit path, including failures.
 
 The branch and the worktree directory both carry a random suffix, so a run that was killed before it could clean up can never block the next one. If a fix branch is already on the remote, whatever its suffix, it says so instead of stacking a second pull request on top of it.
 
-Only the bytes it has to are spliced — each `runs-on` value, each job's `needs`, and one insertion above the first job — so comments, formatting, and every other line survive the edit.
+Only the bytes it has to are spliced — each `runs-on` value — so comments, formatting, and every other line survive the edit.
 
 Only GitHub-hosted jobs get repointed. A job already asking for `self-hosted` with labels you lack is left alone, because the fix there is on your side (`--labels`), not in the YAML.
 
 - `--fix-workflows` opens the PR without asking (useful when there's no terminal to prompt on).
 - `--fix-jobs build,test` limits the rewrite to specific job ids.
-- `--fix-label gh-runner-mac` forces one label onto every rewritten job, instead of letting each job keep its own platform. Each job's fallback is still its own.
-- `--self-hosted-probe` lets the `gh-runner-check` job run here too — see below.
-- `--no-hosted-fallback` leaves no GitHub-hosted runner named anywhere, so jobs queue for a self-hosted one instead of falling back — see below.
-- `--hosted-first` keeps every job on GitHub-hosted runners, and moves it here only while the repo is out of minutes — see below.
+- `--fix-label gh-runner-mac` forces one label onto every rewritten job, instead of letting each job keep its own platform. Each job's hosted runner is still its own.
 - `--no-fix-workflows` never offers.
 - `--no-workflow-check` skips the audit entirely.
 
-### When GitHub-hosted runners aren't available at all
-
-The `gh-runner-check` job runs on `ubuntu-latest`. It's the one job that has to start before any of the others can be scheduled, so it takes the runner that is always there.
-
-Except when it isn't. If hosted runners are unavailable to the repo — hosted minutes exhausted, a spending limit reached, a payment that failed — that job can't start, so nothing downstream of it is scheduled either:
-
-```
-Pick runners
-  The job was not started because recent account payments have failed or your
-  spending limit needs to be increased.
-```
-
-Self-hosted runners are free and unaffected by any of that, so the work itself would have run fine. `--self-hosted-probe` gets it out of the way:
-
-```bash
-npx @singerbj/gh-runner --fix-workflows --self-hosted-probe
-```
-
-The probe job is then written as
-
-```yaml
-runs-on: ${{ vars.GH_RUNNER_PROBE_RUNS_ON && fromJSON(vars.GH_RUNNER_PROBE_RUNS_ON) || 'ubuntu-latest' }}
-```
-
-and `gh-runner` sets the `GH_RUNNER_PROBE_RUNS_ON` repository variable to `["self-hosted","gh-runner"]` while a runner is online, re-asserting it on every heartbeat and deleting it on exit. With a runner up, **nothing in the workflow needs a GitHub-hosted runner**; with none, the variable is gone and the probe is back on `ubuntu-latest`. It also saves the hosted minutes the probe job spends on every run today.
-
-A repository variable is the only thing a runner can set that `runs-on` can read — the probe job can't read its own output, which is the whole reason it exists.
-
-**The trade:** a variable has no expiry, and the marker refs do. A runner killed hard enough to skip its cleanup — `kill -9`, a laptop losing power — leaves the variable set, and the probe job then queues until a runner is back rather than falling back to hosted. That's why this is opt-in. Clearing it by hand is always safe:
-
-```bash
-gh variable delete GH_RUNNER_PROBE_RUNS_ON
-```
-
-Setting the variable needs admin on the repo, the same rights registering a runner already needs. Without it the session says so once and carries on, and the probe job stays hosted.
-
-Re-running the fix is how you switch a repo between the two: on a repo that's already been fixed, with no job left to repoint, it opens a PR that changes only the probe job's own `runs-on`.
-
-If the branch already exists on the remote, it links the open PR instead of stacking a second one.
-
-### When they're never coming back
-
-`--self-hosted-probe` fixes the probe job. It does not fix the jobs downstream of it, and on a repo that genuinely cannot start a hosted runner, that gap is the whole problem.
-
-Every repointed job is written as
-
-```yaml
-runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || 'ubuntu-latest' }}
-```
-
-and the probe resolves that key to `ubuntu-latest` whenever no runner is online. The `||` and the probe's own fallback both name a hosted runner, on purpose: the default is to fail _open_, so a merged fix can never leave CI waiting on hardware nobody started.
-
-Under a spending limit, failing open is failing. The fallback can't start either, so every job hits the same error the probe job used to — just later. If hosted runners are unavailable rather than merely unwanted:
-
-```bash
-npx @singerbj/gh-runner --fix-workflows --no-hosted-fallback
-```
-
-Nothing in the rewritten workflows then names a GitHub-hosted runner. The probe job asks for its labels outright — no variable, no fallback, nothing left to choose between:
-
-```yaml
-runs-on: [self-hosted, gh-runner]
-```
-
-and every job it feeds falls through to the labels it prefers rather than to a hosted image:
-
-```yaml
-runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || fromJSON('["self-hosted","gh-runner-linux"]') }}
-```
-
-A job with no runner online now **queues** instead of failing. Queued is the better failure: the run completes as soon as someone starts `gh-runner`, with no re-run needed.
-
-The flag implies `--self-hosted-probe`, because a hosted probe job would fail the workflow before any of those fallbacks could matter.
-
-**The trade:** this fails _closed_. A broken token, an API error, or simply nobody running `gh-runner` leaves CI queued rather than green — jobs wait up to GitHub's 24-hour limit and are then cancelled. That's the right trade only when the hosted alternative doesn't exist; for every other repo, keep the fallback.
-
-Re-running the fix switches a repo either way, including one already fixed the ordinary way — it converts the jobs, not just the probe. The runner each job originally used is kept in the probe's `targets` input under `hosted`, so re-running without the flag restores the fallbacks exactly:
-
-```jsonc
-"linux": { "labels": ["self-hosted","gh-runner-linux"], "fallback": ["self-hosted","gh-runner-linux"], "hosted": "ubuntu-latest" }
-```
-
-### Only when you're out of minutes: `--hosted-first`
-
-The modes above all put your machine first. If what you actually want is the reverse — GitHub-hosted runners as usual, and your machine **only** once the repo can't start them — then a probe job can't do it, however it's written. It has to run somewhere to decide anything, and "GitHub won't start a hosted runner here" is exactly the situation where the only place left is the runner it is trying to decide about. Chicken, egg.
-
-`--hosted-first` takes the decision out of Actions altogether:
-
-```bash
-npx @singerbj/gh-runner --fix-workflows --hosted-first
-```
-
-There's no probe job. Each job's `runs-on` becomes
-
-```yaml
-runs-on: ${{ vars.GH_RUNNER_HOSTED_BLOCKED && fromJSON('["self-hosted","gh-runner-linux"]') || 'ubuntu-latest' }}
-```
-
-which GitHub resolves from a repository variable before any runner is involved. Unset, it's the runner the job always had. Set, it's your machine.
-
-**`gh-runner` sets it, from outside Actions.** While a session is up it watches the repo's runs this month. When GitHub refuses to start a job for billing reasons — a job that failed on no runner, with no steps, annotated _"The job was not started because recent account payments have failed or your spending limit needs to be increased"_ — it:
-
-1. sets `GH_RUNNER_HOSTED_BLOCKED` (to the time it noticed), so every job from then on resolves to a self-hosted runner, and
-2. re-runs the refused runs from the last 24 hours, which now land here instead. Never a run from a fork: re-running someone else's code on your machine stays a decision for a person.
-
-It reads GitHub's own verdict rather than doing arithmetic on billing data, so included minutes, budgets, spending limits and failed payments are all handled the same way, and it needs no billing scope.
-
-**It clears the variable** when a GitHub-hosted job succeeds again (a raised spending limit shows up in whichever workflows `gh-runner` didn't rewrite), or when a new month starts and the included minutes reset. If hosted runners are still unavailable then — a spending limit rather than a quota — the first job of the month is refused, and the variable goes straight back up with that run re-run. An API error changes nothing, in either direction.
-
-What to expect:
-
-- **Minutes left:** everything runs on GitHub-hosted runners, whether or not `gh-runner` is running.
-- **Out of minutes, `gh-runner` running:** at most one heartbeat (two minutes) of refused runs, which it then re-runs here. Everything after that goes straight to your machine.
-- **Out of minutes, `gh-runner` not running:** runs fail the way they do today. Start `gh-runner` and it catches up on the last day's.
-- **Variable set, nobody online:** jobs queue rather than fail, and run when a runner comes up.
-
-The variable outlives the session on purpose — it describes the repo's billing, not your machine — so a month that resets while nobody is running `gh-runner` leaves jobs queued until someone does. Deleting it is always safe and sends the next run back to GitHub-hosted:
-
-```bash
-gh variable delete GH_RUNNER_HOSTED_BLOCKED
-```
-
-Setting it needs admin on the repo, the same rights registering a runner needs. The session watches any repo whose workflows read the variable, so once the PR is merged a plain `npx @singerbj/gh-runner` is enough.
-
-Re-running the fix with or without `--hosted-first` switches a repo between this and the probe modes: jobs keep their labels and the runner they came from, and the probe job is removed or added back. It can't be combined with `--self-hosted-probe` or `--no-hosted-fallback`, which both configure the probe job this mode doesn't have.
-
-[`.github/workflows/hosted-first-simulation.yml`](../../.github/workflows/hosted-first-simulation.yml) runs the whole cycle on every change against a mocked GitHub, and has GitHub's own expression engine resolve the `runs-on` above in both states.
-
 ### Options
 
-| Option                   | Description                                                        |
-| ------------------------ | ------------------------------------------------------------------ |
-| `--once`, `--ephemeral`  | Take one job, then deregister (default: stay online)               |
-| `--labels a,b,c`         | Extra labels on top of the `gh-runner` set and the host label      |
-| `--repo OWNER/NAME`      | Target a specific repo instead of detecting from cwd               |
-| `--name NAME`            | Runner name to register (default: `<host>-<pid>`)                  |
-| `--allow-public`         | Register even if the repo isn't confirmed private (**dangerous**)  |
-| `--all`                  | Serve every platform this machine can                              |
-| `--os a,b`, `--platform` | Platforms to serve (same as positional arguments)                  |
-| `--docker-image IMAGE`   | Image for containerised runners (default GitHub's runner image)    |
-| `--docker-platform P`    | Container platform, e.g. `linux/amd64`                             |
-| `--runner-version X.Y.Z` | Pin the runner version (default: latest release)                   |
-| `--cache-dir PATH`       | Where to cache runner tarballs                                     |
-| `--no-workflow-check`    | Skip the `runs-on` audit of `.github/workflows`                    |
-| `--fix-workflows`        | Open the workflow PR without asking first                          |
-| `--no-fix-workflows`     | Never offer to open it                                             |
-| `--fix-jobs a,b`         | Limit the fix to these job ids                                     |
-| `--fix-label LABEL`      | Force one label on every job the fix PR rewrites                   |
-| `--self-hosted-probe`    | Let the fix PR's probe job run here too, not only on a hosted one  |
-| `--no-hosted-fallback`   | Name no hosted runner anywhere; jobs queue instead of falling back |
-| `--hosted-first`         | Stay GitHub-hosted; use this machine only while out of minutes     |
-| `-h, --help`             | Show help                                                          |
-| `-v, --version`          | Show version                                                       |
+| Option                   | Description                                                       |
+| ------------------------ | ----------------------------------------------------------------- |
+| `--once`, `--ephemeral`  | Take one job, then deregister (default: stay online)              |
+| `--labels a,b,c`         | Extra labels on top of the `gh-runner` set and the host label     |
+| `--repo OWNER/NAME`      | Target a specific repo instead of detecting from cwd              |
+| `--name NAME`            | Runner name to register (default: `<host>-<pid>`)                 |
+| `--allow-public`         | Register even if the repo isn't confirmed private (**dangerous**) |
+| `--all`                  | Serve every platform this machine can                             |
+| `--os a,b`, `--platform` | Platforms to serve (same as positional arguments)                 |
+| `--docker-image IMAGE`   | Image for containerised runners (default GitHub's runner image)   |
+| `--docker-platform P`    | Container platform, e.g. `linux/amd64`                            |
+| `--runner-version X.Y.Z` | Pin the runner version (default: latest release)                  |
+| `--cache-dir PATH`       | Where to cache runner tarballs                                    |
+| `--no-workflow-check`    | Skip the `runs-on` audit of `.github/workflows`                   |
+| `--fix-workflows`        | Open the workflow PR without asking first                         |
+| `--no-fix-workflows`     | Never offer to open it                                            |
+| `--fix-jobs a,b`         | Limit the fix to these job ids                                    |
+| `--fix-label LABEL`      | Force one label on every job the fix PR rewrites                  |
+| `-h, --help`             | Show help                                                         |
+| `-v, --version`          | Show version                                                      |
 
 ## Safety
 
@@ -441,7 +324,7 @@ console.log(workflows?.matches); // jobs that will land here
 
 `ghRunner` resolves once every runner has finished and been deregistered. Aborting the signal shuts them down and cleans up. It never prompts unless you pass `confirm` / `selectPlatforms` in the context — `createConfirm()` and `terminalPlatformPicker` are the terminal implementations.
 
-The workflow pieces are exported on their own too: `inspectWorkflows`, `parseRunsOn`, `classifyTarget`, `hostedRunnerOs`, `applyRunsOnFix`, `fixLabelFor`, and `proposeWorkflowFix`.
+The workflow pieces are exported on their own too: `inspectWorkflows`, `parseRunsOn`, `classifyTarget`, `hostedRunnerOs`, `applyWorkflowFix`, `fixLabelFor`, and `proposeWorkflowFix` — plus `HostedUsageWatcher`, which is what moves jobs here when the repo is out of minutes.
 
 ## How it works
 
@@ -453,7 +336,8 @@ The workflow pieces are exported on their own too: `inspectWorkflows`, `parseRun
    - **Native** — downloads the matching `actions/runner` release (cached under `${XDG_CACHE_HOME:-~/.cache}/gh-runner`), checks it against the SHA-256 that release publishes, unpacks it into a fresh temp directory, mints a short-lived registration token, and runs `config.sh` then `run.sh`.
    - **Container** — mints the same kind of token and runs GitHub's runner image, passing every value in through the environment. Nothing touches the host disk.
 6. Keeps them online, taking jobs, until you stop the command. `--once` adds `--ephemeral` so each retires after a single job instead.
-7. Cleans up on every exit path: native runners run `config.sh remove` and lose their temp directory; containers are force-removed and deregistered through the API, since `config.sh` is gone with the container.
+   While they're up it watches for GitHub refusing hosted jobs, and moves the fixed jobs here — and back — as described above.
+7. Cleans up on every exit path: any runner variables it set are deleted; native runners run `config.sh remove` and lose their temp directory; containers are force-removed and deregistered through the API, since `config.sh` is gone with the container.
 
 ## License
 

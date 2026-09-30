@@ -457,7 +457,9 @@ describe("the workflow audit", () => {
     expect(workflows?.hosted.map((t) => t.job)).toEqual(["build"]);
     // The prompt names the label the job would actually get: an ubuntu-latest
     // job is pinned to Linux, not handed to whichever machine is free.
-    expect(asked[0]).toMatch(/Update 1 job to runs-on: \[self-hosted, gh-runner-linux\]/);
+    expect(asked[0]).toMatch(
+      /Let 1 job use gh-runner-linux when GitHub-hosted runners can't start/,
+    );
     await rm(repoRoot, { recursive: true, force: true });
   });
 

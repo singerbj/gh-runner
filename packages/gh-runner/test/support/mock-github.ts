@@ -46,6 +46,7 @@ export interface MockRun {
   status: "queued" | "completed";
   conclusion: "success" | "failure" | null;
   head_repository: { full_name: string };
+  path: string;
   /** Parsed workflow, so a re-run evaluates `runs-on` again against the vars of the moment. */
   workflow: WorkflowJobs;
   jobs: MockJob[];
@@ -99,16 +100,17 @@ export class MockGitHub {
   // --- the scheduler ------------------------------------------------------
 
   /** A push: one new run of `workflowYaml`, scheduled against the current state. */
-  push(workflowYaml: string, name = "CI", headRepository = this.repo): MockRun {
+  push(workflowYaml: string, options: { path?: string; headRepository?: string } = {}): MockRun {
     const doc = parse(workflowYaml) as { jobs?: WorkflowJobs };
     const run: MockRun = {
       id: this.nextId++,
-      name,
+      name: options.path ?? "ci.yml",
       run_attempt: 1,
       created_at: this.iso(),
       status: "queued",
       conclusion: null,
-      head_repository: { full_name: headRepository },
+      head_repository: { full_name: options.headRepository ?? this.repo },
+      path: `.github/workflows/${options.path ?? "ci.yml"}`,
       workflow: doc.jobs ?? {},
       jobs: [],
     };
@@ -206,7 +208,9 @@ export class MockGitHub {
       return job;
     }
 
-    const selfHosted = job.labels.some((label) => label.toLowerCase() === "self-hosted");
+    // GitHub only starts one of its own runners for one of its own image names;
+    // any other label — `self-hosted`, `gh-runner-linux` — is a self-hosted job.
+    const selfHosted = !job.labels.every((label) => /^(ubuntu|macos|windows)(-|$)/i.test(label));
     if (selfHosted) {
       const runner = this.online.find((labels) =>
         job.labels.every((label) =>
@@ -259,8 +263,11 @@ export class MockGitHub {
       const created = url.searchParams.get("created") ?? "";
       const since = created.startsWith(">=") ? Date.parse(created.slice(2)) : 0;
       const perPage = Number(url.searchParams.get("per_page") ?? 30);
+      const status = url.searchParams.get("status");
       const runs = this.runs
         .filter((run) => Date.parse(run.created_at) >= since)
+        // GitHub's `status` takes a status or a conclusion.
+        .filter((run) => !status || run.status === status || run.conclusion === status)
         .slice(0, perPage)
         .map(({ workflow: _w, jobs: _j, ...run }) => run);
       return ok({ total_count: runs.length, workflow_runs: runs });

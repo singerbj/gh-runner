@@ -3,19 +3,13 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  HOSTED_BLOCKED_VAR,
-  HOSTED_PROBE_RUNS_ON,
-  PROBE_RUNS_ON_VAR,
-  SELF_HOSTED_ONLY_PROBE_RUNS_ON,
-  SELF_HOSTED_PROBE_RUNS_ON,
-} from "../src/constants.js";
 import { CliError } from "../src/errors.js";
 import { execCommand } from "../src/exec.js";
 import type { CommandRunner, ExecResult } from "../src/exec.js";
 import { GhClient } from "../src/gh.js";
 import { proposeWorkflowFix } from "../src/fix.js";
 import { silentLogger } from "../src/logger.js";
+import { LEGACY_PROBE } from "./support/legacy.js";
 
 const WORKFLOW = [
   "name: CI",
@@ -136,11 +130,11 @@ describe("proposeWorkflowFix", () => {
       "show",
       `refs/remotes/origin/${result.branch}:.github/workflows/ci.yml`,
     );
-    // `build` prefers the runner, and keeps ubuntu-latest as its fallback.
-    expect(pushed).toContain(
-      "runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || 'ubuntu-latest' }}",
-    );
-    expect(pushed).toContain('"linux": { "labels": ["self-hosted","gh-runner-linux"]');
+    // `build` keeps ubuntu-latest, unless gh-runner says the repo can't start it.
+    expect(pushed).toContain("    runs-on: ${{ vars.GH_RUNNER_LINUX || 'ubuntu-latest' }}\n");
+    // Nothing else: no probe job, no needs.
+    expect(pushed).not.toContain("gh-runner-check");
+    expect(pushed).not.toContain("needs:");
     // `local` already asked for the runner directly; nothing to change.
     expect(pushed).toContain("  local:\n    runs-on: [self-hosted, gh-runner]");
 
@@ -170,19 +164,16 @@ describe("proposeWorkflowFix", () => {
       "show",
       `refs/remotes/origin/${result.branch}:.github/workflows/ci.yml`,
     );
-    // Each job prefers its own platform's label and falls back to the runner
-    // it named before.
-    for (const [key, fallback] of [
-      ["mac", "macos-14"],
-      ["linux", "ubuntu-latest"],
-      ["windows", "windows-2022"],
-      ["gh_runner", "our-beefy-box"],
+    // Each job keeps the runner it named before, and switches to its own
+    // platform's label.
+    for (const [variable, hosted] of [
+      ["GH_RUNNER_MAC", "macos-14"],
+      ["GH_RUNNER_LINUX", "ubuntu-latest"],
+      ["GH_RUNNER_WINDOWS", "windows-2022"],
+      ["GH_RUNNER", "our-beefy-box"],
     ]) {
-      expect(pushed).toContain(
-        `runs-on: \${{ fromJSON(needs.gh-runner-check.outputs.runners).${key} || '${fallback}' }}`,
-      );
+      expect(pushed).toContain(`runs-on: \${{ vars.${variable} || '${hosted}' }}`);
     }
-    expect(pushed).toContain('"mac": { "labels": ["self-hosted","gh-runner-mac"]');
   });
 
   it("says which platform each job wants in the PR it opens", async () => {
@@ -193,13 +184,12 @@ describe("proposeWorkflowFix", () => {
     const body = create?.[create.indexOf("--body") + 1] ?? "";
     const title = create?.[create.indexOf("--title") + 1] ?? "";
 
-    expect(title).toBe("Use a self-hosted runner for 4 jobs when one is online");
+    expect(title).toBe("Let 4 jobs fall back to a self-hosted runner when out of Actions minutes");
     expect(body).toContain(
-      "`mac` in `.github/workflows/ci.yml` → `[self-hosted, gh-runner-mac]`, else `macos-14`",
+      "`mac` in `.github/workflows/ci.yml`: `${{ vars.GH_RUNNER_MAC || 'macos-14' }}`",
     );
-    // The mechanism, and the fact that it needs no secret, belong in the body.
-    expect(body).toContain("refs/gh-runner/online/");
-    expect(body).toContain("contents: read");
+    // That nothing depends on a self-hosted runner belongs in the body.
+    expect(body).toContain("No self-hosted runner is needed for this to work.");
   });
 
   it("refuses a label that would write something other than a runs-on", async () => {
@@ -337,183 +327,39 @@ describe("proposeWorkflowFix", () => {
     expect((await propose()).status).toBe("no-changes");
   });
 
-  it("pins the probe job to a hosted runner by default", async () => {
+  it("converts a repo an older version fixed with a probe job", async () => {
+    await commitWorkflow(LEGACY_PROBE);
+
     const result = await propose();
-    expect(result.status).toBe("opened");
-    if (result.status !== "opened") return;
-    expect(result.selfHostedProbe).toBe(false);
+    if (result.status !== "opened") throw new Error(`expected a PR, got ${result.status}`);
+    // Nothing left that's GitHub-hosted — the whole change is the probe.
+    expect(result.jobs).toEqual([]);
+    expect(result.removesProbe).toBe(true);
 
     const pushed = git(
       checkout,
       "show",
       `refs/remotes/origin/${result.branch}:.github/workflows/ci.yml`,
-    );
-    expect(pushed).toContain(`    runs-on: ${HOSTED_PROBE_RUNS_ON}\n`);
-    expect(pushed).not.toContain(PROBE_RUNS_ON_VAR);
-  });
-
-  it("lets the probe job run on the runner too, so nothing needs a hosted one", async () => {
-    const result = await propose({ selfHostedProbe: true });
-    expect(result.status).toBe("opened");
-    if (result.status !== "opened") return;
-    expect(result.selfHostedProbe).toBe(true);
-
-    const pushed = git(
-      checkout,
-      "show",
-      `refs/remotes/origin/${result.branch}:.github/workflows/ci.yml`,
-    );
-    expect(pushed).toContain(`    runs-on: ${SELF_HOSTED_PROBE_RUNS_ON}\n`);
-
-    // The repointed job is unaffected: it still reads the probe's output.
-    expect(pushed).toContain(
-      "runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || 'ubuntu-latest' }}",
-    );
-
-    const prCreate = ghCalls.find((args) => args.join(" ").includes("pr create"));
-    expect(prCreate?.join("\n")).toContain(PROBE_RUNS_ON_VAR);
-  });
-
-  it("moves an already-fixed repo's probe job over, with nothing left to repoint", async () => {
-    const first = await propose({ selfHostedProbe: false });
-    expect(first.status).toBe("opened");
-    if (first.status !== "opened") return;
-
-    // Land that fix on main and drop its branch, the way a merged PR would, so
-    // a second run has neither a hosted job to repoint nor a branch to refuse.
-    git(checkout, "fetch", "--quiet", "origin", first.branch);
-    git(checkout, "merge", "--quiet", "--ff-only", `origin/${first.branch}`);
-    git(checkout, "push", "--quiet", "origin", "main");
-    git(checkout, "push", "--quiet", "origin", "--delete", first.branch);
-
-    expect((await propose({ selfHostedProbe: false })).status).toBe("no-changes");
-
-    const moved = await propose({ selfHostedProbe: true });
-    expect(moved.status).toBe("opened");
-    if (moved.status !== "opened") return;
-    expect(moved.jobs).toEqual([]);
-
-    const pushed = git(
-      checkout,
-      "show",
-      `refs/remotes/origin/${moved.branch}:.github/workflows/ci.yml`,
-    );
-    expect(pushed).toContain(`    runs-on: ${SELF_HOSTED_PROBE_RUNS_ON}\n`);
-    // Only the probe job's own runner moved.
-    expect(pushed).toContain(
-      "runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || 'ubuntu-latest' }}",
-    );
-  });
-
-  it("leaves no hosted runner named when asked for no hosted fallback", async () => {
-    const result = await propose({ noHostedFallback: true });
-    expect(result.status).toBe("opened");
-    if (result.status !== "opened") return;
-    expect(result.noHostedFallback).toBe(true);
-    // Asking for no hosted runners has to move the probe job too — it gates
-    // every other job, so leaving it hosted would fail the run regardless.
-    expect(result.selfHostedProbe).toBe(true);
-
-    const pushed = git(
-      checkout,
-      "show",
-      `refs/remotes/origin/${result.branch}:.github/workflows/ci.yml`,
-    );
-    expect(pushed).toContain(`    runs-on: ${SELF_HOSTED_ONLY_PROBE_RUNS_ON}\n`);
-    expect(pushed).toContain(
-      "runs-on: ${{ fromJSON(needs.gh-runner-check.outputs.runners).linux || " +
-        'fromJSON(\'["self-hosted","gh-runner-linux"]\') }}',
-    );
-    expect(pushed).not.toContain(PROBE_RUNS_ON_VAR);
-  });
-
-  it("converts a repo fixed the ordinary way, jobs and probe alike", async () => {
-    const first = await propose({});
-    expect(first.status).toBe("opened");
-    if (first.status !== "opened") return;
-
-    git(checkout, "fetch", "--quiet", "origin", first.branch);
-    git(checkout, "merge", "--quiet", "--ff-only", `origin/${first.branch}`);
-    git(checkout, "push", "--quiet", "origin", "main");
-    git(checkout, "push", "--quiet", "origin", "--delete", first.branch);
-
-    const queued = await propose({ noHostedFallback: true });
-    expect(queued.status).toBe("opened");
-    if (queued.status !== "opened") return;
-    // Nothing left to repoint — the whole change is where jobs fall through to.
-    expect(queued.jobs).toEqual([]);
-
-    const pushed = git(
-      checkout,
-      "show",
-      `refs/remotes/origin/${queued.branch}:.github/workflows/ci.yml`,
-    );
-    expect(pushed).toContain(`    runs-on: ${SELF_HOSTED_ONLY_PROBE_RUNS_ON}\n`);
-    expect(pushed).not.toContain("|| 'ubuntu-latest' }}");
-    expect(pushed).toContain('|| fromJSON(\'["self-hosted","gh-runner-linux"]\') }}');
-  });
-
-  it("keeps jobs hosted under --hosted-first, with no probe job to need a runner", async () => {
-    const result = await propose({ hostedFirst: true });
-    expect(result.status).toBe("opened");
-    if (result.status !== "opened") return;
-    expect(result).toMatchObject({ hostedFirst: true, selfHostedProbe: false });
-
-    const pushed = git(
-      checkout,
-      "show",
-      `refs/remotes/origin/${result.branch}:.github/workflows/ci.yml`,
-    );
-    expect(pushed).toContain(
-      `    runs-on: \${{ vars.${HOSTED_BLOCKED_VAR} && fromJSON('["self-hosted","gh-runner-linux"]') || 'ubuntu-latest' }}\n`,
     );
     expect(pushed).not.toContain("gh-runner-check");
-    expect(pushed).not.toContain("needs:");
+    expect(pushed).not.toContain("pick-runner");
+    expect(pushed).toContain("runs-on: ${{ vars.GH_RUNNER_LINUX || 'ubuntu-latest' }}");
+    expect(pushed).toContain("runs-on: ${{ vars.GH_RUNNER_MAC || 'macos-14' }}");
 
     const create = ghCalls.find((args) => args[0] === "pr" && args[1] === "create") ?? [];
-    const title = create[create.indexOf("--title") + 1] ?? "";
-    const body = create[create.indexOf("--body") + 1] ?? "";
-    expect(title).toMatch(/only when out of GitHub-hosted minutes/);
-    expect(body).toContain(HOSTED_BLOCKED_VAR);
-    expect(body).toContain(`gh variable delete ${HOSTED_BLOCKED_VAR}`);
-  });
-
-  it("switches a probe-mode repo to --hosted-first and back again", async () => {
-    const land = async (overrides: Parameters<typeof propose>[0]) => {
-      const result = await propose(overrides);
-      if (result.status !== "opened") throw new Error(`expected a PR, got ${result.status}`);
-      git(checkout, "fetch", "--quiet", "origin", result.branch);
-      git(checkout, "merge", "--quiet", "--ff-only", `origin/${result.branch}`);
-      git(checkout, "push", "--quiet", "origin", "main");
-      git(checkout, "push", "--quiet", "origin", "--delete", result.branch);
-      return {
-        result,
-        file: await readFile(join(checkout, ".github", "workflows", "ci.yml"), "utf8"),
-      };
-    };
-
-    const probe = await land({});
-    expect(probe.file).toContain("gh-runner-check:");
-
-    const hostedFirst = await land({ hostedFirst: true });
-    expect(hostedFirst.file).not.toContain("gh-runner-check");
-    expect(hostedFirst.file).toContain(`vars.${HOSTED_BLOCKED_VAR}`);
-
-    const back = await land({});
-    expect(back.result.jobs).toEqual([
-      {
-        file: ".github/workflows/ci.yml",
-        job: "build",
-        label: "gh-runner-linux",
-        from: ["ubuntu-latest"],
-      },
-    ]);
-    expect(back.file).toBe(probe.file);
-  });
-
-  it("refuses --hosted-first alongside the probe options", async () => {
-    await expect(propose({ hostedFirst: true, noHostedFallback: true })).rejects.toThrow(
-      /--hosted-first can't be combined/,
+    expect(create[create.indexOf("--title") + 1]).toBe(
+      "Replace the gh-runner-check job with runner variables",
     );
+  });
+
+  it("has nothing to do on a repo it has already fixed", async () => {
+    const first = await propose();
+    if (first.status !== "opened") throw new Error(`expected a PR, got ${first.status}`);
+    git(checkout, "fetch", "--quiet", "origin", first.branch);
+    git(checkout, "merge", "--quiet", "--ff-only", `origin/${first.branch}`);
+    git(checkout, "push", "--quiet", "origin", "main");
+    git(checkout, "push", "--quiet", "origin", "--delete", first.branch);
+
+    expect((await propose()).status).toBe("no-changes");
   });
 });

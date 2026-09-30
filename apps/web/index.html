@@ -156,10 +156,10 @@
         <p class="section-lede">
           Registering a runner nothing targets wastes ten minutes. On startup it parses every
           workflow — real YAML, not regex — reports which jobs will land here, and offers to open a
-          PR repointing the ones that won't. Each job keeps its platform: a
-          <code>macos-14</code> job asks for <code>gh-runner-mac</code>, so it can only land on a
-          Mac. The rewrite happens in a throwaway <code>git worktree</code>, so your working tree is
-          never touched.
+          PR that lets the ones that won't fall back to your machine. Each job keeps its platform: a
+          <code>macos-14</code> job falls back to <code>gh-runner-mac</code>, so it can only land on
+          a Mac. The rewrite happens in a throwaway <code>git worktree</code>, so your working tree
+          is never touched.
         </p>
         <pre
           class="code-block small"
@@ -167,10 +167,13 @@
 Update 3 jobs and open a pull request? <span class="c-dim">[y/N]</span> y
 <span class="c-green">Pull request opened:</span> https://github.com/octocat/thing/pull/42</code></pre>
         <p class="note">
-          The PR is safe to merge with nobody at the keyboard: a repointed job uses your machine
-          while a runner is online, and the runner it already had when none is. The runner publishes
-          its liveness as a ref under <code>refs/gh-runner/online/</code>; the workflow reads it
-          with the built-in token, so there is no secret to add.
+          The PR changes nothing about where CI runs until it has to. Each job becomes
+          <code>runs-on: ${{ vars.GH_RUNNER_LINUX || 'ubuntu-latest' }}</code>, and stays on
+          GitHub-hosted runners. Only when GitHub refuses to start hosted jobs — out of minutes, a
+          spending limit, a failed payment — does a running <code>gh-runner</code> set that
+          variable, re-run what was refused on your machine, and clear it again when it stops or the
+          minutes come back. No secret, no extra job, and no self-hosted runner needed the rest of
+          the time.
         </p>
         <p class="note">
           <code>--fix-workflows</code> skips the prompt, <code>--no-fix-workflows</code> silences

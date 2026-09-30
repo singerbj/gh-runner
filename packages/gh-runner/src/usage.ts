@@ -1,17 +1,17 @@
-import { HOSTED_BLOCKED_VAR } from "./constants.js";
+import { runnerVariable } from "./constants.js";
 import type { GhClient } from "./gh.js";
 import type { Logger } from "./logger.js";
-import { HEARTBEAT_INTERVAL_MS } from "./markers.js";
 
 /**
- * Watching for a repo that has run out of GitHub-hosted minutes.
+ * Moving jobs onto this machine when — and only when — a repo can't start
+ * GitHub-hosted ones.
  *
  * The question can't be answered from inside a workflow. A job that asks needs
  * a runner to start on, and "GitHub won't start a hosted runner here" is the
  * one answer that job can never give — it just doesn't run. So `gh-runner`
  * asks from the outside, on the machine that is about to take the work, and
- * writes the answer into {@link HOSTED_BLOCKED_VAR}, which `runs-on` reads
- * before anything is scheduled.
+ * writes the answer into a repository variable per label (see
+ * {@link runnerVariable}), which `runs-on` reads before anything is scheduled.
  *
  * It asks GitHub's own verdict rather than doing arithmetic on billing data.
  * Included minutes, budgets, spending limits and failed payments all end the
@@ -27,10 +27,13 @@ import { HEARTBEAT_INTERVAL_MS } from "./markers.js";
 export const BILLING_BLOCK_PATTERN =
   /spending limit|payments? (?:have|has) failed|billing|out of (?:actions )?minutes/i;
 
-/** How many recent runs to look at on each check. */
-const RUNS_PER_CHECK = 30;
+/** How often a session checks, and re-asserts the variables it holds. */
+export const CHECK_INTERVAL_MS = 120_000;
 
-/** How many runs after a refusal to check for a hosted job that got through. */
+/** How many of this month's failed runs to look at on each check. */
+const FAILED_RUNS_PER_CHECK = 30;
+
+/** How many successful runs after a refusal to check for a hosted job that got through. */
 const RECOVERY_RUNS = 10;
 
 /**
@@ -46,12 +49,13 @@ interface WorkflowRun {
   status?: string | null;
   conclusion?: string | null;
   created_at?: string;
+  /** `.github/workflows/ci.yml`, sometimes with `@ref` on the end. */
+  path?: string;
   head_repository?: { full_name?: string } | null;
 }
 
 interface WorkflowJob {
   id: number;
-  status?: string | null;
   conclusion?: string | null;
   completed_at?: string | null;
   runner_name?: string | null;
@@ -87,7 +91,17 @@ export interface UsageCheckResult {
 export interface HostedUsageWatcherOptions {
   repo: string;
   gh: GhClient;
+  /** A client that outlives an abort, so the variables still come down on Ctrl+C. */
+  cleanupGh?: GhClient;
   logger: Logger;
+  /** Labels this session serves; one variable is set for each while blocked. */
+  labels: readonly string[];
+  /**
+   * Workflow files whose jobs read a runner variable. A refused run of any other
+   * workflow would only be refused again, so it isn't re-run. Unset means every
+   * workflow.
+   */
+  workflowFiles?: readonly string[];
   /** Injected in tests; defaults to `Date.now`. */
   now?: () => number;
   intervalMs?: number;
@@ -118,43 +132,58 @@ function neverStarted(job: WorkflowJob): boolean {
   return job.conclusion === "failure" && !job.runner_name && (!job.steps || job.steps.length === 0);
 }
 
-function ranOnHosted(job: WorkflowJob): boolean {
+/** Our labels are never on a GitHub-hosted runner, and neither is `self-hosted`. */
+function ranOnHosted(job: WorkflowJob, selfHostedLabels: ReadonlySet<string>): boolean {
   return (
     job.conclusion === "success" &&
     Boolean(job.runner_name) &&
-    !(job.labels ?? []).some((label) => label.toLowerCase() === "self-hosted")
+    !(job.labels ?? []).some((label) => selfHostedLabels.has(label.toLowerCase()))
   );
 }
 
 /**
- * Decides whether GitHub-hosted runners can start jobs in a repo, and keeps
- * {@link HOSTED_BLOCKED_VAR} in step with the answer.
+ * Decides whether GitHub-hosted runners can start jobs in a repo, and holds the
+ * runner variables for this session's labels while they can't.
  *
  * - A job refused for billing reasons, with no hosted job succeeding after it,
- *   means blocked: the variable is set, and the refused runs from the last day
- *   are re-run so they land on the self-hosted runner instead.
- * - A hosted job succeeding after the variable was set means unblocked.
+ *   means blocked: the variables are set, and the refused runs from the last
+ *   day are re-run so they land here instead.
+ * - A hosted job succeeding after that means unblocked.
  * - So does a new month with no refusal in it yet: included minutes reset on
  *   the first. If hosted runners are still unavailable — a spending limit, a
- *   failed payment — the next job is refused and the variable goes straight
- *   back up, with that run re-run.
+ *   failed payment — the next job is refused, and the variables go straight
+ *   back up with that run re-run.
  *
- * Nothing changes on an answer it couldn't get. A failed API call leaves the
- * variable exactly as it was, whichever way that is.
+ * The variables mean "a gh-runner for this label is up, and hosted runners
+ * aren't", so they come down when the session ends. With nobody running
+ * `gh-runner`, every job goes back to GitHub-hosted: the repo never depends on
+ * a self-hosted runner being there. They are re-asserted on every check, since
+ * another session serving the same label may have taken them down on its way
+ * out.
  *
- * Unlike the marker refs and the probe variable, the variable is *not* taken
- * down when the session ends. It says something about the repo's billing, not
- * about this machine, and a job queued for a self-hosted runner is a better
- * outcome than one GitHub refuses outright.
+ * Nothing changes on an answer it couldn't get: a failed API call leaves the
+ * variables as they were, whichever way that is.
  */
 export class HostedUsageWatcher {
   private readonly options: HostedUsageWatcherOptions;
   private readonly now: () => number;
   private readonly intervalMs: number;
+  private readonly variables: Map<string, string>;
+  private readonly selfHostedLabels: Set<string>;
   /** Verdicts by `runId:attempt` — a completed attempt is immutable, so each is read once. */
   private readonly verdicts = new Map<string, RunVerdict>();
   /** Runs this session has already asked GitHub to re-run. */
   private readonly rerun = new Set<number>();
+  /**
+   * The latest refusal this session has seen. Remembered, because a refused run
+   * that is re-run and succeeds stops looking refused — and is still the reason
+   * the variables are up.
+   */
+  private refusedAt: number | null = null;
+  /** True while this session holds the variables up. */
+  private holding = false;
+  /** False until the first check has had an answer. */
+  private settled = false;
   private timer: { close: () => void } | undefined;
   private running: Promise<UsageCheckResult> | undefined;
   private warned = false;
@@ -162,7 +191,17 @@ export class HostedUsageWatcher {
   constructor(options: HostedUsageWatcherOptions) {
     this.options = options;
     this.now = options.now ?? Date.now;
-    this.intervalMs = options.intervalMs ?? HEARTBEAT_INTERVAL_MS;
+    this.intervalMs = options.intervalMs ?? CHECK_INTERVAL_MS;
+    this.variables = new Map(options.labels.map((label) => [runnerVariable(label), label]));
+    this.selfHostedLabels = new Set([
+      "self-hosted",
+      ...options.labels.map((label) => label.toLowerCase()),
+    ]);
+  }
+
+  /** The variables this session sets while blocked, and the label each one holds. */
+  get variableNames(): string[] {
+    return [...this.variables.keys()];
   }
 
   /** Checks once now, then on every interval until {@link stop}. */
@@ -172,6 +211,7 @@ export class HostedUsageWatcher {
     const schedule =
       this.options.schedule ??
       ((fn, ms) => {
+        // Unreffed: the watcher should never be the reason the process stays up.
         const timer = setInterval(fn, ms);
         timer.unref();
         return { close: () => clearInterval(timer) };
@@ -183,9 +223,12 @@ export class HostedUsageWatcher {
     return first;
   }
 
-  stop(): void {
+  /** Stops checking and takes this session's variables down. Safe to call twice. */
+  async stop(): Promise<void> {
     this.timer?.close();
     this.timer = undefined;
+    await this.running?.catch(() => {});
+    if (this.holding) await this.release(this.options.cleanupGh ?? this.options.gh);
   }
 
   /** One pass. Overlapping calls share the pass already in flight. */
@@ -198,132 +241,143 @@ export class HostedUsageWatcher {
 
   private async checkOnce(): Promise<UsageCheckResult> {
     const now = this.now();
-    const variable = await this.readVariable();
-    if (variable.state === "error") {
-      return this.unknown(`couldn't read ${HOSTED_BLOCKED_VAR}: ${variable.reason}`);
-    }
-
-    const status = await this.hostedStatus(now, variable.value);
+    const status = await this.hostedStatus(now);
     if (status.state === "unknown") return this.unknown(status.reason);
+    this.warned = false;
 
     const { repo, gh, logger } = this.options;
     const { dim, yellow, green } = logger.styles;
     const line = (text: string) => logger.raw(`    ${text}\n`);
+    const names = this.variableNames.join(", ");
 
-    if (status.state === "blocked") {
-      let action: UsageCheckResult["action"] = "none";
+    const first = !this.settled;
+    this.settled = true;
 
-      if (variable.value === null) {
-        if (!(await gh.setVariable(repo, HOSTED_BLOCKED_VAR, new Date(now).toISOString()))) {
-          return this.unknown(`couldn't set ${HOSTED_BLOCKED_VAR} — it needs admin on ${repo}`);
-        }
-        action = "set";
-        line(
-          `${yellow("!")} GitHub won't start hosted jobs in ${repo} ${dim(
-            `(no minutes left, or a billing limit) — set ${HOSTED_BLOCKED_VAR}, so jobs run here instead`,
-          )}`,
-        );
+    if (status.state === "ok") {
+      // A session killed too hard to clean up — `kill -9`, a power cut — leaves
+      // its variables set, and jobs queued behind a runner that isn't there.
+      // The first session to come back and find hosted runners working takes
+      // them down. A sibling that still needs one puts it back on its next check.
+      if (first && !this.holding) {
+        await this.release(gh);
+        return { status, action: "none", rerun: [] };
       }
-
-      // Only runs refused before the variable went up: a job refused after it is
-      // one that never reads it, and a re-run would only be refused again.
-      const rerun: number[] = [];
-      for (const runId of status.refusedRuns) {
-        if (this.rerun.has(runId)) continue;
-        this.rerun.add(runId);
-        if (await gh.rerunFailedJobs(repo, runId)) {
-          rerun.push(runId);
-          line(`${green("↻")} re-running refused run ${runId} ${dim("on the self-hosted runner")}`);
-        }
-      }
-
-      this.warned = false;
-      return { status, action, rerun };
-    }
-
-    if (variable.value !== null) {
-      await gh.deleteVariable(repo, HOSTED_BLOCKED_VAR);
+      if (!this.holding) return { status, action: "none", rerun: [] };
+      await this.release(gh);
       line(
-        `${green("✓")} GitHub-hosted runners are available to ${repo} again ${dim(
-          `— cleared ${HOSTED_BLOCKED_VAR}`,
-        )}`,
+        `${green("✓")} GitHub-hosted runners are available to ${repo} again ${dim(`— cleared ${names}`)}`,
       );
-      this.warned = false;
       return { status, action: "cleared", rerun: [] };
     }
 
-    this.warned = false;
-    return { status, action: "none", rerun: [] };
+    // Re-asserted every time: a sibling session serving the same label takes
+    // it down on its way out.
+    let set = 0;
+    for (const [name, label] of this.variables) {
+      if (await gh.setVariable(repo, name, label)) set += 1;
+    }
+    if (set === 0) {
+      // Nothing is pointing jobs here, so a re-run would only be refused again.
+      return this.unknown(`couldn't set ${names} — that needs admin on ${repo}`);
+    }
+
+    const action = this.holding ? "none" : "set";
+    if (!this.holding) {
+      this.holding = true;
+      line(
+        `${yellow("!")} GitHub won't start hosted jobs in ${repo} ${dim(
+          `(no minutes left, or a billing limit) — set ${names}, so they run here`,
+        )}`,
+      );
+    }
+
+    const rerun: number[] = [];
+    for (const runId of status.refusedRuns) {
+      if (this.rerun.has(runId)) continue;
+      this.rerun.add(runId);
+      if (await gh.rerunFailedJobs(repo, runId)) {
+        rerun.push(runId);
+        line(`${green("↻")} re-running refused run ${runId} ${dim("here")}`);
+      }
+    }
+
+    return { status, action, rerun };
+  }
+
+  private async release(gh: GhClient): Promise<void> {
+    this.holding = false;
+    for (const name of this.variables.keys()) {
+      await gh.deleteVariable(this.options.repo, name);
+    }
   }
 
   /**
    * Blocked or not, from the runs themselves.
    *
    * Only this month counts, since that's when included minutes last reset. A
-   * variable set in an earlier month is therefore dropped unless there's a
-   * refusal this month too — and a refusal as late as the one that set it
-   * keeps it up until a hosted job gets through after it.
+   * refusal keeps the repo blocked until a hosted job gets through after it.
    */
-  async hostedStatus(now: number, variableValue: string | null = null): Promise<HostedStatus> {
+  async hostedStatus(now: number): Promise<HostedStatus> {
     const since = startOfUtcMonth(now);
-    const runs = await this.listRuns(since);
-    if (runs === null) return { state: "unknown", reason: "couldn't list workflow runs" };
+    const failed = await this.listRuns(since, "failure", FAILED_RUNS_PER_CHECK);
+    if (failed === null) return { state: "unknown", reason: "couldn't list workflow runs" };
 
-    const completed = runs.filter((run) => run.status === "completed");
+    let lastRefusal = this.refusedAt !== null && this.refusedAt >= since ? this.refusedAt : null;
+    const refused: Array<{ run: WorkflowRun; at: number }> = [];
 
-    let lastRefusal: number | null = null;
-    const refusedRuns: Array<{ id: number; at: number; ours: boolean }> = [];
-
-    for (const run of completed) {
-      if (run.conclusion !== "failure") continue;
+    for (const run of failed) {
+      if (run.status !== "completed") continue;
       const verdict = await this.verdict(run);
       if (verdict === null) return { state: "unknown", reason: `couldn't read run ${run.id}` };
       if (verdict.refusedAt === null) continue;
-
       lastRefusal = latest(lastRefusal, verdict.refusedAt);
-      refusedRuns.push({
-        id: run.id,
-        at: verdict.refusedAt,
-        ours: run.head_repository?.full_name?.toLowerCase() === this.options.repo.toLowerCase(),
-      });
+      refused.push({ run, at: verdict.refusedAt });
     }
 
-    // A variable set this month is itself evidence of a refusal — possibly one
-    // whose run has since been deleted, or that fell off the first page. One
-    // set by hand to something that isn't a time counts from the start of the
-    // month, so a hosted job getting through still clears it.
-    const setAt = variableValue === null ? null : (time(variableValue) ?? since);
-    const evidence = latest(lastRefusal, setAt !== null && setAt >= since ? setAt : null);
-    if (evidence === null) return { state: "ok" };
+    if (lastRefusal === null) {
+      this.refusedAt = null;
+      return { state: "ok" };
+    }
 
     // Did anything get through on a hosted runner after that?
-    let hostedOk: number | null = null;
-    const after = completed
-      .filter((run) => run.conclusion === "success" && (time(run.created_at) ?? 0) >= evidence)
-      .slice(0, RECOVERY_RUNS);
-    for (const run of after) {
+    const succeeded = await this.listRuns(lastRefusal, "success", RECOVERY_RUNS);
+    if (succeeded === null) return { state: "unknown", reason: "couldn't list workflow runs" };
+    for (const run of succeeded) {
       const verdict = await this.verdict(run);
       if (verdict === null) return { state: "unknown", reason: `couldn't read run ${run.id}` };
-      hostedOk = latest(hostedOk, verdict.hostedOkAt);
+      if (verdict.hostedOkAt !== null && verdict.hostedOkAt > lastRefusal) {
+        this.refusedAt = null;
+        return { state: "ok" };
+      }
     }
-    if (hostedOk !== null && hostedOk > evidence) return { state: "ok" };
 
+    this.refusedAt = lastRefusal;
     const cutoff = Math.max(now - RERUN_WINDOW_MS, since);
+    const files = this.options.workflowFiles;
     return {
       state: "blocked",
-      since: evidence,
-      refusedRuns: refusedRuns
-        // A run from a fork is someone else's code. Re-running it here is a
-        // decision for a person, not for a heartbeat.
-        .filter((run) => run.ours && run.at >= cutoff && (setAt === null || run.at <= setAt))
-        .map((run) => run.id),
+      since: lastRefusal,
+      refusedRuns: refused
+        .filter(({ run, at }) => {
+          // A run from a fork is someone else's code. Re-running it here is a
+          // decision for a person, not for a heartbeat.
+          const ours =
+            run.head_repository?.full_name?.toLowerCase() === this.options.repo.toLowerCase();
+          const moves = !files || files.includes((run.path ?? "").split("@")[0] ?? "");
+          return ours && moves && at >= cutoff;
+        })
+        .map(({ run }) => run.id),
     };
   }
 
-  private async listRuns(since: number): Promise<WorkflowRun[] | null> {
+  private async listRuns(
+    since: number,
+    status: "failure" | "success",
+    perPage: number,
+  ): Promise<WorkflowRun[] | null> {
     const created = encodeURIComponent(`>=${new Date(since).toISOString()}`);
     const body = await this.json<{ workflow_runs?: WorkflowRun[] }>(
-      `repos/${this.options.repo}/actions/runs?per_page=${RUNS_PER_CHECK}&created=${created}`,
+      `repos/${this.options.repo}/actions/runs?status=${status}&per_page=${perPage}&created=${created}`,
     );
     return body && Array.isArray(body.workflow_runs) ? body.workflow_runs : null;
   }
@@ -343,7 +397,9 @@ export class HostedUsageWatcher {
     let hostedOkAt: number | null = null;
 
     for (const job of body.jobs) {
-      if (ranOnHosted(job)) hostedOkAt = latest(hostedOkAt, time(job.completed_at));
+      if (ranOnHosted(job, this.selfHostedLabels)) {
+        hostedOkAt = latest(hostedOkAt, time(job.completed_at));
+      }
       if (!neverStarted(job)) continue;
 
       const annotations = await this.json<Annotation[]>(
@@ -360,14 +416,6 @@ export class HostedUsageWatcher {
     return verdict;
   }
 
-  private async readVariable(): Promise<
-    { state: "ok"; value: string | null } | { state: "error"; reason: string }
-  > {
-    const value = await this.options.gh.getVariable(this.options.repo, HOSTED_BLOCKED_VAR);
-    if (value === undefined) return { state: "error", reason: "API error" };
-    return { state: "ok", value: value === "" ? null : value };
-  }
-
   private async json<T>(path: string): Promise<T | null> {
     try {
       return JSON.parse(await this.options.gh.api(path)) as T;
@@ -382,7 +430,7 @@ export class HostedUsageWatcher {
       this.warned = true;
       const { dim } = this.options.logger.styles;
       this.options.logger.raw(
-        `    ${dim(`! couldn't check whether hosted runners are available (${reason}) — leaving ${HOSTED_BLOCKED_VAR} as it is`)}\n`,
+        `    ${dim(`! couldn't check whether GitHub-hosted runners are available (${reason}) — changing nothing`)}\n`,
       );
     }
     return { status: { state: "unknown", reason }, action: "none", rerun: [] };

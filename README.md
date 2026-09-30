@@ -13,17 +13,20 @@ Linux can come from a container, so any machine can serve it; macOS and Windows 
 
 It also audits `.github/workflows` first, so you find out that nothing targets `runs-on: [self-hosted, gh-runner]` _before_ you sit waiting for a job that never arrives — and it offers to open a PR that fixes the YAML, prepared in a throwaway git worktree so your working tree is never touched.
 
-That PR doesn't hand your CI to a laptop that might be closed. Each job it repoints uses your machine while a runner is online and **the runner it already had** when none is, decided per run by [`actions/pick-runner`](actions/pick-runner) — which needs no secret, only `contents: read`.
+That PR doesn't hand your CI to a laptop that might be closed. Every job stays on the GitHub-hosted runner it already had, and moves to your machine **only while the repo can't start hosted jobs** — out of Actions minutes, over a spending limit, a failed payment:
 
-Or the other way round: `--hosted-first` keeps every job on GitHub-hosted runners and moves it to your machine **only while the repo is out of Actions minutes**. No job makes that call — it can't, with no runner to start on — so `gh-runner` makes it from outside Actions and hands it to `runs-on` in a repository variable. The [out-of-minutes simulation](.github/workflows/hosted-first-simulation.yml) proves the whole cycle on every change, against a mocked GitHub.
+```yaml
+runs-on: ${{ vars.GH_RUNNER_LINUX || 'ubuntu-latest' }}
+```
+
+No job decides that — it couldn't, with no runner to start on. `gh-runner` notices GitHub refusing jobs, sets the variable while it's running, re-runs what was refused, and clears it when it stops or the minutes come back. The [out-of-minutes simulation](.github/workflows/fallback-simulation.yml) proves the whole cycle on every change, against a mocked GitHub.
 
 ## What's in here
 
-| Path                  | Package               | What it is                                         |
-| --------------------- | --------------------- | -------------------------------------------------- |
-| `packages/gh-runner`  | `@singerbj/gh-runner` | The CLI and its programmatic API (TypeScript, ESM) |
-| `apps/web`            | `@gh-runner/web`      | The landing page (Vite, static, deployed to Pages) |
-| `actions/pick-runner` | —                     | The action the fix PR calls to choose a runner     |
+| Path                 | Package               | What it is                                         |
+| -------------------- | --------------------- | -------------------------------------------------- |
+| `packages/gh-runner` | `@singerbj/gh-runner` | The CLI and its programmatic API (TypeScript, ESM) |
+| `apps/web`           | `@gh-runner/web`      | The landing page (Vite, static, deployed to Pages) |
 
 Full CLI docs live in [`packages/gh-runner/README.md`](packages/gh-runner/README.md).
 

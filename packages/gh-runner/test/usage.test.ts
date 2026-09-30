@@ -1,6 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { HOSTED_BLOCKED_VAR } from "../src/constants.js";
-import type { CommandRunner } from "../src/exec.js";
 import { GhClient } from "../src/gh.js";
 import { silentLogger } from "../src/logger.js";
 import { BILLING_BLOCK_PATTERN, HostedUsageWatcher, startOfUtcMonth } from "../src/usage.js";
@@ -31,38 +29,13 @@ describe("startOfUtcMonth", () => {
   });
 });
 
-describe("GhClient variables", () => {
-  const client = (answer: Awaited<ReturnType<CommandRunner>>) =>
-    new GhClient({ runner: () => Promise.resolve(answer) });
-
-  it("tells a missing variable apart from one it couldn't read", async () => {
-    expect(
-      await client({ code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)\n" }).getVariable(
-        "o/r",
-        HOSTED_BLOCKED_VAR,
-      ),
-    ).toBeNull();
-    expect(
-      await client({ code: 1, stdout: "", stderr: "gh: Server Error (HTTP 500)\n" }).getVariable(
-        "o/r",
-        HOSTED_BLOCKED_VAR,
-      ),
-    ).toBeUndefined();
-    expect(
-      await client({ code: 0, stdout: "2026-09-30\n", stderr: "" }).getVariable(
-        "o/r",
-        HOSTED_BLOCKED_VAR,
-      ),
-    ).toBe("2026-09-30");
-  });
-});
-
 describe("HostedUsageWatcher", () => {
-  const watcherFor = (github: MockGitHub) =>
+  const watcherFor = (github: MockGitHub, labels = ["gh-runner", "gh-runner-linux"]) =>
     new HostedUsageWatcher({
       repo: github.repo,
       gh: new GhClient({ runner: github.commandRunner() }),
       logger: silentLogger,
+      labels,
       now: () => github.now,
       schedule: () => ({ close: () => {} }),
     });
@@ -70,19 +43,25 @@ describe("HostedUsageWatcher", () => {
   const WORKFLOW = [
     "jobs:",
     "  build:",
-    `    runs-on: \${{ vars.${HOSTED_BLOCKED_VAR} && fromJSON('["self-hosted","gh-runner-linux"]') || 'ubuntu-latest' }}`,
+    "    runs-on: ${{ vars.GH_RUNNER_LINUX || 'ubuntu-latest' }}",
     "",
   ].join("\n");
+
+  it("names one variable per label it serves", () => {
+    expect(
+      watcherFor(new MockGitHub(), ["gh-runner", "gh-runner-mac", "cuda"]).variableNames,
+    ).toEqual(["GH_RUNNER", "GH_RUNNER_MAC", "GH_RUNNER_LABEL_CUDA"]);
+  });
 
   it("shares one pass between overlapping checks", async () => {
     const github = new MockGitHub();
     const watcher = watcherFor(github);
     const [a, b] = await Promise.all([watcher.check(), watcher.check()]);
     expect(a).toBe(b);
-    expect(github.log.filter((line) => line.includes("/actions/runs?"))).toHaveLength(1);
+    expect(github.log.filter((line) => line.includes("status=failure"))).toHaveLength(1);
   });
 
-  it("reads a completed run's jobs once, however many heartbeats pass", async () => {
+  it("reads a completed run's jobs once, however many checks pass", async () => {
     const github = new MockGitHub();
     github.push(["jobs:", "  x:", "    runs-on: ubuntu-latest", ""].join("\n"));
     github.runs[0]!.conclusion = "failure";
@@ -104,17 +83,26 @@ describe("HostedUsageWatcher", () => {
     expect(github.log.some((line) => line.includes("created=%3E%3D2026-10-01"))).toBe(true);
   });
 
-  it("keeps a variable set by hand this month, until a hosted job gets through", async () => {
+  it("only asks about failed runs, so a busy month can't push a refusal off the page", async () => {
     const github = new MockGitHub();
-    github.variables.set(HOSTED_BLOCKED_VAR, "true");
+    github.hostedAvailable = false;
+    github.push(WORKFLOW);
+    github.hostedAvailable = true;
+    for (let i = 0; i < 40; i += 1)
+      github.push(["jobs:", "  x:", "    runs-on: [self-hosted, gh-runner]", ""].join("\n"));
+
+    expect((await watcherFor(github).check()).status.state).toBe("blocked");
+  });
+
+  it("clears stale copies of its own variables on its first check — never another label's", async () => {
+    const github = new MockGitHub();
+    github.variables.set("GH_RUNNER_MAC", "gh-runner-mac");
     const watcher = watcherFor(github);
 
-    expect((await watcher.check()).status.state).toBe("blocked");
-    expect(github.variables.get(HOSTED_BLOCKED_VAR)).toBe("true");
-
-    github.advance(60_000);
-    github.push(["jobs:", "  lint:", "    runs-on: ubuntu-latest", ""].join("\n"));
-    github.advance(60_000);
-    expect((await watcher.check()).action).toBe("cleared");
+    await watcher.check();
+    await watcher.stop();
+    // Another session's variable, for a label this one doesn't serve.
+    expect([...github.variables.keys()]).toEqual(["GH_RUNNER_MAC"]);
+    expect(github.log.filter((line) => line.startsWith("DELETE"))).toHaveLength(2);
   });
 });

@@ -175,12 +175,12 @@ describe("GhClient tokens and versions", () => {
 });
 
 describe("GhClient variables", () => {
-  it("updates first, so the call a heartbeat repeats costs one request", async () => {
+  it("updates first, so the call a check repeats costs one request", async () => {
     const { runner, calls } = fakeRunner({
-      "actions/variables/GH_RUNNER_PROBE_RUNS_ON": okResult(""),
+      "actions/variables/GH_RUNNER_LINUX": okResult(""),
     });
     await expect(
-      new GhClient({ runner }).setVariable("a/b", "GH_RUNNER_PROBE_RUNS_ON", "[]"),
+      new GhClient({ runner }).setVariable("a/b", "GH_RUNNER_LINUX", "gh-runner-linux"),
     ).resolves.toBe(true);
 
     expect(calls).toHaveLength(1);
@@ -188,11 +188,11 @@ describe("GhClient variables", () => {
       "api",
       "-X",
       "PATCH",
-      "repos/a/b/actions/variables/GH_RUNNER_PROBE_RUNS_ON",
+      "repos/a/b/actions/variables/GH_RUNNER_LINUX",
       "-f",
-      "name=GH_RUNNER_PROBE_RUNS_ON",
+      "name=GH_RUNNER_LINUX",
       "-f",
-      "value=[]",
+      "value=gh-runner-linux",
     ]);
   });
 

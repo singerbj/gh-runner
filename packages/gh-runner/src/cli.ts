@@ -20,6 +20,8 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     return 1;
   }
 
+  for (const warning of parsed.warnings) logger.warn(warning);
+
   if (parsed.kind === "help") {
     logger.raw(USAGE);
     return 0;

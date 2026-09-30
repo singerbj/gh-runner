@@ -1,5 +1,7 @@
 export { ghRunner, workflowsNeedFix, terminalPlatformPicker } from "./runner.js";
 export type { RunContext, RunSummary, RunResult } from "./runner.js";
+export { ghRunnerSetup, COMPOSE_URL } from "./setup.js";
+export type { SetupResult } from "./setup.js";
 export {
   planOptions,
   parseTargetName,

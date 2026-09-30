@@ -143,7 +143,8 @@
         </p>
         <pre
           class="code-block"
-        ><code><span class="c-prompt">$</span> gh-runner            <span class="c-dim"># pick from a menu</span>
+        ><code><span class="c-prompt">$</span> gh-runner setup      <span class="c-dim"># once per repo: open the workflow PR</span>
+<span class="c-prompt">$</span> gh-runner            <span class="c-dim"># pick from a menu</span>
 <span class="c-prompt">$</span> gh-runner mac linux  <span class="c-dim"># one runner each, in parallel</span>
 <span class="c-prompt">$</span> gh-runner --all      <span class="c-dim"># everything this machine can serve</span>
 <span class="c-prompt">$</span> gh-runner --once --labels gpu --repo owner/name</code></pre>
@@ -165,9 +166,15 @@
         </p>
         <pre
           class="code-block small"
-        ><code><span class="c-dim">!</span> no job targets this runner; 3 target GitHub-hosted runners
-Update 3 jobs and open a pull request? <span class="c-dim">[y/N]</span> y
-<span class="c-green">Pull request opened:</span> https://github.com/octocat/thing/pull/42</code></pre>
+        ><code><span class="c-prompt">$</span> npx @singerbj/gh-runner setup
+<span class="c-bold">==&gt;</span> Setting up <span class="c-bold">octocat/thing</span> to fall back to gh-runner...
+    <span class="c-green">✓</span> ci.yml <span class="c-dim">→</span> <span class="c-bold">build</span> stays on ubuntu-latest <span class="c-dim">— gh-runner-linux when out of minutes</span>
+    <span class="c-green">Pull request opened:</span> https://github.com/octocat/thing/pull/42</code></pre>
+        <p class="note">
+          <code>gh-runner setup</code> opens that PR and exits without registering anything, which
+          makes it the one command a new project needs. <code>--dry-run</code> lists the changes
+          without pushing. A runner session offers the same PR itself when nothing targets it.
+        </p>
         <p class="note">
           The PR changes nothing about where CI runs until it has to. Each job becomes
           <code>runs-on: ${{ vars.GH_RUNNER_LINUX || 'ubuntu-latest' }}</code>, and stays on
@@ -204,16 +211,25 @@ Update 3 jobs and open a pull request? <span class="c-dim">[y/N]</span> y
       </section>
 
       <section class="wrap" id="always-on" aria-labelledby="always-on-heading">
-        <h2 id="always-on-heading">Always on, with Docker Compose</h2>
+        <h2 id="always-on-heading">Always on, with Docker</h2>
         <p class="section-lede">
           For a server that should always be ready to take jobs, such as a home lab box, a VPS or a
-          Coolify host, run it with Docker Compose. <code>gh-runner</code> is the container's main
-          process, so the runner is online whenever the container is up, restarts with it, and
-          deregisters itself when the container stops. Every release attaches a copy of the file
-          that installs that release's version.
+          Coolify host, every release publishes <code>ghcr.io/singerbj/gh-runner</code> for amd64
+          and arm64. <code>gh-runner</code> is the container's main process, so the runner is online
+          whenever the container is up, restarts with it, and deregisters itself when the container
+          stops. It takes two variables:
         </p>
         <pre
           class="code-block"
+        ><code><span class="c-prompt">$</span> docker run -d --restart unless-stopped --stop-timeout 60 \
+    -e GH_TOKEN=<span class="c-dim">github_pat_…</span> -e GH_RUNNER_REPO=<span class="c-dim">you/your-repo</span> \
+    -v gh-runner:/home/node ghcr.io/singerbj/gh-runner</code></pre>
+        <p class="note">
+          Or with Docker Compose, using the file every release attaches, pinned to that release's
+          image:
+        </p>
+        <pre
+          class="code-block small"
         ><code><span class="c-prompt">$</span> curl -fsSLO https://github.com/singerbj/gh-runner/releases/latest/download/docker-compose.yml
 <span class="c-prompt">$</span> printf 'GH_TOKEN=%s\nGH_RUNNER_REPO=%s\n' <span class="c-dim">"github_pat_…" "you/your-repo"</span> &gt; .env
 <span class="c-prompt">$</span> docker compose up -d
@@ -230,9 +246,9 @@ Update 3 jobs and open a pull request? <span class="c-dim">[y/N]</span> y
             read/write. The repo must be private.
           </li>
           <li>
-            <strong>Options:</strong> <code>GH_RUNNER_NAME</code> (default
-            <code>gh-runner-docker</code>), <code>GH_RUNNER_LABELS</code> for extra labels, and
-            <code>GH_RUNNER_VERSION</code> to install a specific version.
+            <strong>Options:</strong> <code>GH_RUNNER_NAME</code> (default: the container's
+            hostname) and <code>GH_RUNNER_LABELS</code> for extra labels. Anything in the
+            container's command is passed to <code>gh-runner</code> too.
           </li>
           <li>
             <strong>Linux only.</strong> Jobs run as an unprivileged user inside the container, with
@@ -259,10 +275,9 @@ Update 3 jobs and open a pull request? <span class="c-dim">[y/N]</span> y
         <h2 id="ai-setup-heading">Set up a repo with an AI agent</h2>
         <p class="section-lede">
           Paste this into Claude Code, Copilot, Cursor or any coding agent, with your repo open. It
-          makes the same edit as <code>gh-runner</code>'s own pull request: every job stays on its
-          GitHub-hosted runner and falls back to your machine only when GitHub can't start it. It
-          also flags jobs that need Docker or a particular CPU, documents the setup in your README,
-          and opens a PR with a table of every job it changed or skipped.
+          runs <code>gh-runner setup</code> (or makes the same edit by hand where <code>gh</code>
+          isn't available), flags jobs that need Docker or a particular CPU, documents the setup in
+          your README, and finishes with a PR that has a table of every job it changed or skipped.
         </p>
         <div class="cta">
           <button

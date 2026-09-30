@@ -10,42 +10,62 @@ import { readFallback } from "../src/workflows.js";
  * aren't code, so nothing else would notice them drifting from the CLI.
  */
 
-const compose = readFileSync(new URL("../deploy/docker-compose.yml", import.meta.url), "utf8");
-const prompt = readFileSync(new URL("../prompts/setup-repo.md", import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+const compose = read("deploy/docker-compose.yml");
+const entrypoint = read("deploy/entrypoint.sh");
+const dockerfile = read("deploy/Dockerfile");
+const prompt = read("prompts/setup-repo.md");
 
 interface ComposeService {
   image: string;
   restart: string;
-  init: boolean;
+  stop_grace_period: string;
   environment: Record<string, string>;
-  command: string[];
+  volumes: string[];
 }
 
 const service = (parse(compose) as { services: Record<string, ComposeService> }).services[
   "gh-runner"
 ] as ComposeService;
-const script = service.command.join("\n");
 
 describe("deploy/docker-compose.yml", () => {
-  it("keeps gh-runner up as the container's own process", () => {
-    expect(service.image).toBe("node:lts");
+  it("runs the published image, and keeps it running", () => {
+    // release.yml rewrites exactly this to the release's own tag in the copy
+    // it attaches.
+    expect(service.image).toBe("ghcr.io/singerbj/gh-runner:latest");
     expect(service.restart).toBe("unless-stopped");
-    // Without an init, SIGTERM never reaches gh-runner's cleanup.
-    expect(service.init).toBe(true);
-    expect(script).toMatch(/exec setpriv --reuid=node .* gh-runner "\$\$\{args\[@\]\}"/s);
+    expect(service.stop_grace_period).toBe("60s");
+    expect(service.volumes).toEqual(["gh-runner:/home/node"]);
   });
 
-  it("carries the version default the release workflow pins", () => {
-    // release.yml rewrites this exact string in the copy it attaches.
-    expect(compose).toContain("${GH_RUNNER_VERSION:-latest}");
-    expect(service.environment["GH_RUNNER_VERSION"]).toBe("${GH_RUNNER_VERSION:-latest}");
+  it("passes on every variable the entrypoint reads", () => {
+    const used = [...entrypoint.matchAll(/\$\{(GH_[A-Z_]+)/g)].map((match) => match[1]);
+    expect(Object.keys(service.environment).toSorted()).toEqual([...new Set(used)].toSorted());
+  });
+});
+
+describe("deploy/Dockerfile", () => {
+  it("starts the entrypoint under tini, as the unprivileged node user", () => {
+    expect(dockerfile).toMatch(/^FROM node:lts$/m);
+    expect(dockerfile).toMatch(/^USER node$/m);
+    expect(dockerfile).toContain('ENTRYPOINT ["tini", "--", "gh-runner-entrypoint"]');
+    expect(dockerfile).toContain(
+      "COPY --chmod=755 entrypoint.sh /usr/local/bin/gh-runner-entrypoint",
+    );
   });
 
+  it("installs the version the release workflow passes in", () => {
+    expect(dockerfile).toMatch(/^ARG GH_RUNNER_VERSION=latest$/m);
+    expect(dockerfile).toContain('"@singerbj/gh-runner@${GH_RUNNER_VERSION}"');
+  });
+});
+
+describe("deploy/entrypoint.sh", () => {
   it("only passes flags the CLI accepts", () => {
-    const argv = [...script.matchAll(/args(?:\+)?=\((.*)\)/g)]
+    const argv = [...entrypoint.matchAll(/args\+?=\((.*)\)/g)]
       .flatMap((match) => (match[1] ?? "").split(/\s+/))
       .filter(Boolean)
-      .map((word) => (word.startsWith('"$${') ? "placeholder" : word));
+      .map((word) => (word.startsWith('"$') ? "placeholder" : word));
     argv.splice(argv.indexOf("--repo") + 1, 1, "octocat/thing");
 
     const { kind, options } = parseArgs(argv);
@@ -54,6 +74,10 @@ describe("deploy/docker-compose.yml", () => {
     expect(options.repo).toBe("octocat/thing");
     expect(options.fixWorkflows).toBe("never");
     expect(options.labels).toEqual(["placeholder"]);
+  });
+
+  it("hands the process to gh-runner, so tini's SIGTERM reaches it", () => {
+    expect(entrypoint).toContain('exec gh-runner "${args[@]}" "$@"');
   });
 });
 

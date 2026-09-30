@@ -285,7 +285,11 @@ export async function ghRunner(
       logger,
       ...(signal ? { signal } : {}),
     });
-    reportFix(logger, fix, plans);
+    reportFix(
+      logger,
+      fix,
+      plans.map((plan) => plan.allLabels),
+    );
     if (fix.status === "opened" || fix.status === "dry-run") {
       fixedLabels.push(...fix.jobs.map((job) => job.label));
     }
@@ -773,7 +777,16 @@ function reportWorkflows(logger: Logger, report: WorkflowReport): void {
   }
 }
 
-function reportFix(logger: Logger, fix: WorkflowFixResult, plans: readonly TargetPlan[]): void {
+/**
+ * Says what a workflow fix did. `served` is the label sets of the runners this
+ * session registers, so jobs moved to a label nobody here serves get a hint;
+ * `gh-runner setup` registers nothing and passes none.
+ */
+export function reportFix(
+  logger: Logger,
+  fix: WorkflowFixResult,
+  served?: ReadonlyArray<readonly string[]>,
+): void {
   const { dim, green, bold } = logger.styles;
   const line = (text: string) => logger.raw(`    ${text}\n`);
 
@@ -788,8 +801,6 @@ function reportFix(logger: Logger, fix: WorkflowFixResult, plans: readonly Targe
       );
       return;
     case "dry-run":
-      line(dim(`would change ${fix.files.join(", ")} on ${fix.branch}`));
-      return;
     case "opened":
       for (const { file, job, label, from } of fix.jobs) {
         const hosted = from.length > 0 ? from.join(", ") : "its current runner";
@@ -802,10 +813,16 @@ function reportFix(logger: Logger, fix: WorkflowFixResult, plans: readonly Targe
       if (fix.removesProbe) {
         line(`${green("✓")} removed the ${bold(PROBE_JOB_ID)} job an older version added`);
       }
+      if (fix.status === "dry-run") {
+        line(
+          dim(`would change ${fix.files.join(", ")} on ${fix.branch} — dry run, nothing pushed`),
+        );
+        return;
+      }
       // A macOS job repointed from a Linux-only session keeps running — on
       // GitHub. Say so, and how to bring it here instead.
-      for (const label of fixLabels(fix.jobs)) {
-        if (plans.some((plan) => plan.allLabels.includes(label))) continue;
+      for (const label of served ? fixLabels(fix.jobs) : []) {
+        if (served?.some((labels) => labels.includes(label))) continue;
         const os = osForLabel(label);
         line(
           `  ${dim(

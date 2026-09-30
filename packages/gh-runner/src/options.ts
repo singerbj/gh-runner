@@ -52,10 +52,13 @@ export interface RunnerOptions {
   cacheDir: string | undefined;
   /** Directory used to detect the repo. Defaults to `process.cwd()`. */
   cwd: string | undefined;
+  /** `setup` only: prepare the workflow change, but don't push it or open the PR. */
+  dryRun: boolean;
 }
 
 export interface ParsedArgs {
-  kind: "run" | "help" | "version";
+  /** `setup` opens the workflow PR and exits; `run` registers runners. */
+  kind: "run" | "setup" | "help" | "version";
   options: RunnerOptions;
   /** Things worth telling the user that shouldn't stop the run — retired flags. */
   warnings: string[];
@@ -66,6 +69,13 @@ export const USAGE = `gh-runner — temporarily register this machine as a GitHu
 USAGE
   gh-runner [platforms...] [options]     # run from inside a git repo
   npx @singerbj/gh-runner [platforms...] [options]
+  gh-runner setup [--dry-run]            # set the repo up; registers nothing
+
+SETUP
+  gh-runner setup          Open the PR that lets GitHub-hosted jobs fall back to
+                           gh-runner when the repo can't start them, then exit
+  --dry-run                Prepare the change and list it, but push nothing
+  Also takes --repo, --allow-public, --fix-jobs and --fix-label.
 
 PLATFORMS
   gh-runner                Pick from a menu (or just this machine, with no terminal)
@@ -136,6 +146,7 @@ export function emptyOptions(): RunnerOptions {
     name: undefined,
     cacheDir: undefined,
     cwd: undefined,
+    dryRun: false,
   };
 }
 
@@ -180,9 +191,13 @@ export function assertRunnerName(name: string): string {
   return name;
 }
 
-export function parseArgs(argv: readonly string[]): ParsedArgs {
+export function parseArgs(input: readonly string[]): ParsedArgs {
   const options = emptyOptions();
   const warnings: string[] = [];
+
+  // `setup` is the one subcommand. Any other bare word is a platform.
+  const setup = input[0] === "setup";
+  const argv = setup ? input.slice(1) : input;
 
   const requireValue = (flag: string, value: string | undefined): string => {
     if (value === undefined || value.startsWith("-")) {
@@ -239,6 +254,9 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         options.fixWorkflows = "always";
         i += 1;
         break;
+      case "--dry-run":
+        options.dryRun = true;
+        break;
       case "--fix-label":
         options.fixLabel = assertLabel("--fix-label", requireValue("--fix-label", argv[i + 1]));
         i += 1;
@@ -282,6 +300,17 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         // A bare word is a platform: `gh-runner mac linux`.
         options.platforms.push(arg);
     }
+  }
+
+  if (setup) {
+    // setup registers nothing, so a platform would be silently ignored.
+    if (options.platforms.length > 0 || options.all) {
+      throw new CliError("setup takes no platforms — it only changes the workflows");
+    }
+    return { kind: "setup", options, warnings };
+  }
+  if (options.dryRun) {
+    throw new CliError("--dry-run only applies to: gh-runner setup");
   }
 
   // Validate names now so a typo fails before anything is registered.

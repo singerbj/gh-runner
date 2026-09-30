@@ -89,10 +89,10 @@ gh-runner --repo owner/name
 
 Merging never moves the major or minor. Those stay where you put them, and there are two ways to put them:
 
-- **Set the version in `packages/gh-runner/package.json`.** A manifest ahead of npm is published exactly as written, with no bump commit — the way to pick a specific number.
-- **Run the workflow from the Actions tab** and choose `minor` or `major`. Both reset the patch to zero: from `1.0.7`, minor gives `1.1.0` and major gives `2.0.0`.
+- **Set the version in `packages/gh-runner/package.json`.** A version npm has never had is published exactly as written, with no bump commit — the way to pick a specific number. That includes one _below_ what npm has: the version line was started over at `0.0.1` that way, with `latest` moved back to it explicitly (npm won't move it backwards on its own). A version npm already has is bumped past as usual.
+- **Run the workflow from the Actions tab** and choose `minor` or `major`. Both reset the patch to zero: from `0.0.7`, minor gives `0.1.0` and major gives `1.0.0`.
 
-Either way, merges afterwards resume at the patch: `1.1.0`, then `1.1.1`, `1.1.2`.
+Either way, merges afterwards resume at the patch: `0.1.0`, then `0.1.1`, `0.1.2`.
 
 Nothing reads commit messages. An earlier version of this workflow looked for a `[major]` keyword, and the very commit that documented the keyword tripped it — `0.1.0` published as `1.0.0`. A release trigger you can't write about is a bad trigger.
 

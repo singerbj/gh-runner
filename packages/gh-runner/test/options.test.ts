@@ -37,19 +37,18 @@ describe("parseArgs", () => {
     expect(options.cacheDir).toBe("/tmp/cache");
   });
 
-  it("keeps the probe job on a GitHub-hosted runner unless asked otherwise", () => {
-    expect(parseArgs([]).options.selfHostedProbe).toBe(false);
-    expect(parseArgs(["--self-hosted-probe"]).options.selfHostedProbe).toBe(true);
-  });
+  it.each([["--self-hosted-probe"], ["--no-hosted-fallback"], ["--hosted-first"]])(
+    "still accepts the retired %s, and says it isn't needed",
+    (flag) => {
+      const parsed = parseArgs([flag, "linux"]);
+      expect(parsed.kind).toBe("run");
+      expect(parsed.options.platforms).toEqual(["linux"]);
+      expect(parsed.warnings).toEqual([expect.stringContaining(`${flag} is no longer needed`)]);
+    },
+  );
 
-  it("keeps the hosted fallbacks unless asked otherwise, and moves the probe with them", () => {
-    expect(parseArgs([]).options.noHostedFallback).toBe(false);
-
-    // The probe job gates every other one, so dropping the hosted fallbacks
-    // without moving it would fail the workflow before they could matter.
-    const options = parseArgs(["--no-hosted-fallback"]).options;
-    expect(options.noHostedFallback).toBe(true);
-    expect(options.selfHostedProbe).toBe(true);
+  it("has nothing to warn about normally", () => {
+    expect(parseArgs(["--fix-workflows"]).warnings).toEqual([]);
   });
 
   it.each([["-h"], ["--help"]])("treats %s as help", (flag) => {

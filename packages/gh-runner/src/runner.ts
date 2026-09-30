@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_LABEL, OS_NAMES, osForLabel, osLabel } from "./constants.js";
+import { DEFAULT_LABEL, OS_NAMES, osForLabel, osLabel, runnerVariable } from "./constants.js";
 import {
   DEFAULT_IMAGE,
   archForDockerPlatform,
@@ -17,7 +17,6 @@ import type { CommandRunner, ExecOptions, SpawnHook } from "./exec.js";
 import { fixLabelFor, fixLabels, proposeWorkflowFix } from "./fix.js";
 import type { WorkflowFixResult } from "./fix.js";
 import { GhClient } from "./gh.js";
-import { MarkerPublisher } from "./heartbeat.js";
 import { silentLogger } from "./logger.js";
 import type { Logger } from "./logger.js";
 import { promptMultiSelect } from "./menu.js";
@@ -36,6 +35,7 @@ import {
 import type { RunnerOs, RunnerPlatform } from "./platform.js";
 import { declineAll } from "./prompt.js";
 import type { Confirm } from "./prompt.js";
+import { HostedUsageWatcher } from "./usage.js";
 import { availableTargets, parseTargetNames, planOptions, resolveTargets } from "./targets.js";
 import type { PlatformOption, ResolvedTarget } from "./targets.js";
 import { PROBE_JOB_ID, inspectWorkflows } from "./workflows.js";
@@ -268,6 +268,9 @@ export async function ghRunner(
     );
   }
 
+  // Labels a fix opened just now moves jobs to. The audit ran before that PR
+  // existed, so it can't have seen them.
+  const fixedLabels: string[] = [];
   if (fixing) {
     if (!repoRoot) {
       throw new CliError("--fix-workflows needs to run inside the checkout of the target repo");
@@ -277,14 +280,15 @@ export async function ghRunner(
       repoRoot,
       ...(options.fixLabel ? { label: options.fixLabel } : {}),
       jobs: options.fixJobs,
-      selfHostedProbe: options.selfHostedProbe,
-      noHostedFallback: options.noHostedFallback,
       commandRunner,
       gh,
       logger,
       ...(signal ? { signal } : {}),
     });
     reportFix(logger, fix, plans);
+    if (fix.status === "opened" || fix.status === "dry-run") {
+      fixedLabels.push(...fix.jobs.map((job) => job.label));
+    }
     throwIfAborted();
   }
 
@@ -330,25 +334,25 @@ export async function ghRunner(
     ...(context.fetchImpl ? { fetchImpl: context.fetchImpl } : {}),
   };
 
-  // Tells the workflows which labels are answerable right now. Jobs the fix PR
-  // repointed read these refs and fall back to their hosted runner without one.
-  const markers = new MarkerPublisher({
-    repo,
-    labels: [...new Set(plans.flatMap((plan) => plan.labels))],
-    gh,
-    cleanupGh,
-    logger,
-    // Only where a probe job asks for it. The audit is the source of truth, but
-    // it doesn't see a fix opened moments ago — and `--no-workflow-check` skips
-    // it entirely — so the flag counts on its own. Not under
-    // `--no-hosted-fallback`: that probe names its labels outright and never
-    // reads the variable, so publishing one would just be an API call that can
-    // warn about permissions nobody needs.
-    probeVariable:
-      (options.selfHostedProbe && !options.noHostedFallback) ||
-      (workflows?.selfHostedProbe ?? false),
-  });
-  await markers.start(await gh.defaultBranch(repo).catch(() => "main"));
+  // Moves jobs here while — and only while — GitHub won't start hosted ones.
+  const labels = switchableLabels(plans, options, workflows, fixedLabels);
+  const usage =
+    labels.length > 0
+      ? new HostedUsageWatcher({
+          repo,
+          gh,
+          cleanupGh,
+          logger,
+          labels,
+          ...(workflows?.scanned ? { workflowFiles: workflows.fallbackFiles } : {}),
+        })
+      : undefined;
+  if (usage) {
+    logger.raw(
+      `    ${dim(`watching for GitHub-hosted runners being refused — will set ${usage.variableNames.join(", ")} if they are`)}\n`,
+    );
+    await usage.start();
+  }
 
   // Every runner gets to finish and clean up even if a sibling blows up.
   const settled = await Promise.allSettled(
@@ -357,7 +361,7 @@ export async function ghRunner(
         ? runDockerTarget({ ...shared, plan })
         : runNativeTarget({ ...shared, plan, runnerVersion: runnerVersion as string }),
     ),
-  ).finally(() => markers.stop());
+  ).finally(() => usage?.stop());
 
   const runners: RunSummary[] = [];
   let failure: unknown;
@@ -649,7 +653,40 @@ async function runDockerTarget(run: TargetRun): Promise<RunSummary> {
  * runners up — if some job already targets them, the setup is working.
  */
 export function workflowsNeedFix(report: WorkflowReport | undefined): boolean {
-  return Boolean(report?.scanned && report.matches.length === 0 && report.hosted.length > 0);
+  return Boolean(
+    report?.scanned &&
+    ((report.matches.length === 0 && report.hosted.length > 0) || report.legacyProbe),
+  );
+}
+
+/**
+ * The labels this session holds a runner variable for while GitHub-hosted
+ * runners are refused: the ones it serves that a workflow actually reads — or
+ * that a fix opened just now will make one read. Without a scan to go on, every
+ * label a fix could have written.
+ *
+ * Never the host label: nothing writes a variable for it, and one per machine
+ * name would be clutter nobody reads.
+ */
+function switchableLabels(
+  plans: readonly TargetPlan[],
+  options: RunnerOptions,
+  report: WorkflowReport | undefined,
+  fixedLabels: readonly string[],
+): string[] {
+  const served = [
+    DEFAULT_LABEL,
+    ...plans.map((plan) => osLabel(plan.target.os)),
+    ...options.labels,
+  ].filter((label, index, all) => all.indexOf(label) === index);
+
+  if (!report?.scanned) return served;
+
+  const read = new Set([
+    ...report.verdicts.flatMap((v) => (v.target.fallback ? [v.target.fallback.variable] : [])),
+    ...fixedLabels.map(runnerVariable),
+  ]);
+  return served.filter((label) => read.has(runnerVariable(label)));
 }
 
 async function shouldFixWorkflows(
@@ -663,15 +700,19 @@ async function shouldFixWorkflows(
 
   const hosted = report?.hosted ?? [];
   const count = hosted.length;
+  if (count === 0) {
+    return confirm(
+      `Replace the ${PROBE_JOB_ID} job an older gh-runner added and open a pull request?`,
+      false,
+    );
+  }
   const labels = [...new Set(hosted.map((target) => fixLabelFor(target, options.fixLabel)))];
   const jobs = `${count} job${count === 1 ? "" : "s"}`;
 
   // Naming the labels up front is the whole point: someone about to say yes can
   // see that the macOS jobs stay on macOS.
   return confirm(
-    labels.length === 1
-      ? `Update ${jobs} to runs-on: [self-hosted, ${labels[0]}] and open a pull request?`
-      : `Update ${jobs} to self-hosted runs-on (${labels.join(", ")}) and open a pull request?`,
+    `Let ${jobs} use ${labels.join(", ")} when GitHub-hosted runners can't start, and open a pull request?`,
     false,
   );
 }
@@ -686,7 +727,11 @@ function reportWorkflows(logger: Logger, report: WorkflowReport): void {
   }
 
   for (const target of report.matches) {
-    line(`${green("✓")} ${target.file} ${dim("→")} ${bold(target.job)} will run here`);
+    const hosted = target.fallback?.hosted.join(", ");
+    line(
+      `${green("✓")} ${target.file} ${dim("→")} ${bold(target.job)} ` +
+        (hosted ? `runs on ${hosted}, and here when out of minutes` : "will run here"),
+    );
   }
 
   for (const { target, missing } of report.missing) {
@@ -747,21 +792,15 @@ function reportFix(logger: Logger, fix: WorkflowFixResult, plans: readonly Targe
       return;
     case "opened":
       for (const { file, job, label, from } of fix.jobs) {
-        const fallback = from.length > 0 ? from.join(", ") : "its current runner";
-        line(`${green("✓")} ${file} ${dim("→")} ${bold(job)} prefers ${label}, else ${fallback}`);
+        const hosted = from.length > 0 ? from.join(", ") : "its current runner";
+        line(
+          `${green("✓")} ${file} ${dim("→")} ${bold(job)} stays on ${hosted} ${dim(
+            `— ${label} when out of minutes (${runnerVariable(label)})`,
+          )}`,
+        );
       }
-      if (fix.noHostedFallback) {
-        line(
-          `${green("✓")} ${bold(PROBE_JOB_ID)} and every job it feeds ask for self-hosted runners ${dim(
-            `— no GitHub-hosted runner is named anywhere, so jobs queue instead of falling back`,
-          )}`,
-        );
-      } else if (fix.selfHostedProbe) {
-        line(
-          `${green("✓")} ${bold(PROBE_JOB_ID)} runs here too ${dim(
-            `— nothing in those workflows needs a GitHub-hosted runner`,
-          )}`,
-        );
+      if (fix.removesProbe) {
+        line(`${green("✓")} removed the ${bold(PROBE_JOB_ID)} job an older version added`);
       }
       // A macOS job repointed from a Linux-only session keeps running — on
       // GitHub. Say so, and how to bring it here instead.

@@ -13,15 +13,20 @@ Linux can come from a container, so any machine can serve it; macOS and Windows 
 
 It also audits `.github/workflows` first, so you find out that nothing targets `runs-on: [self-hosted, gh-runner]` _before_ you sit waiting for a job that never arrives — and it offers to open a PR that fixes the YAML, prepared in a throwaway git worktree so your working tree is never touched.
 
-That PR doesn't hand your CI to a laptop that might be closed. Each job it repoints uses your machine while a runner is online and **the runner it already had** when none is, decided per run by [`actions/pick-runner`](actions/pick-runner) — which needs no secret, only `contents: read`.
+That PR doesn't hand your CI to a laptop that might be closed. Every job stays on the GitHub-hosted runner it already had, and moves to your machine **only while the repo can't start hosted jobs** — out of Actions minutes, over a spending limit, a failed payment:
+
+```yaml
+runs-on: ${{ vars.GH_RUNNER_LINUX || 'ubuntu-latest' }}
+```
+
+No job decides that — it couldn't, with no runner to start on. `gh-runner` notices GitHub refusing jobs, sets the variable while it's running, re-runs what was refused, and clears it when it stops or the minutes come back. The [out-of-minutes simulation](.github/workflows/fallback-simulation.yml) proves the whole cycle on every change, against a mocked GitHub.
 
 ## What's in here
 
-| Path                  | Package               | What it is                                         |
-| --------------------- | --------------------- | -------------------------------------------------- |
-| `packages/gh-runner`  | `@singerbj/gh-runner` | The CLI and its programmatic API (TypeScript, ESM) |
-| `apps/web`            | `@gh-runner/web`      | The landing page (Vite, static, deployed to Pages) |
-| `actions/pick-runner` | —                     | The action the fix PR calls to choose a runner     |
+| Path                 | Package               | What it is                                         |
+| -------------------- | --------------------- | -------------------------------------------------- |
+| `packages/gh-runner` | `@singerbj/gh-runner` | The CLI and its programmatic API (TypeScript, ESM) |
+| `apps/web`           | `@gh-runner/web`      | The landing page (Vite, static, deployed to Pages) |
 
 Full CLI docs live in [`packages/gh-runner/README.md`](packages/gh-runner/README.md).
 
@@ -84,10 +89,10 @@ gh-runner --repo owner/name
 
 Merging never moves the major or minor. Those stay where you put them, and there are two ways to put them:
 
-- **Set the version in `packages/gh-runner/package.json`.** A manifest ahead of npm is published exactly as written, with no bump commit — the way to pick a specific number.
-- **Run the workflow from the Actions tab** and choose `minor` or `major`. Both reset the patch to zero: from `1.0.7`, minor gives `1.1.0` and major gives `2.0.0`.
+- **Set the version in `packages/gh-runner/package.json`.** A version npm has never had is published exactly as written, with no bump commit — the way to pick a specific number. That includes one _below_ what npm has: the version line was started over at `0.0.1` that way, with `latest` moved back to it explicitly (npm won't move it backwards on its own). A version npm already has is bumped past as usual.
+- **Run the workflow from the Actions tab** and choose `minor` or `major`. Both reset the patch to zero: from `0.0.7`, minor gives `0.1.0` and major gives `1.0.0`.
 
-Either way, merges afterwards resume at the patch: `1.1.0`, then `1.1.1`, `1.1.2`.
+Either way, merges afterwards resume at the patch: `0.1.0`, then `0.1.1`, `0.1.2`.
 
 Nothing reads commit messages. An earlier version of this workflow looked for a `[major]` keyword, and the very commit that documented the keyword tripped it — `0.1.0` published as `1.0.0`. A release trigger you can't write about is a bad trigger.
 

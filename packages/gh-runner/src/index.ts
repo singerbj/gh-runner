@@ -28,10 +28,9 @@ export {
   osLabel,
   osForLabel,
   FIX_BRANCH_PREFIX,
-  PROBE_RUNS_ON_VAR,
-  PROBE_RUNS_ON_VALUE,
-  HOSTED_PROBE_RUNS_ON,
-  SELF_HOSTED_PROBE_RUNS_ON,
+  runnerVariable,
+  labelForVariable,
+  fallbackRunsOn,
 } from "./constants.js";
 export { GhClient, parseDigestFromReleaseBody } from "./gh.js";
 export type { GhClientOptions, RepoVisibility } from "./gh.js";
@@ -43,9 +42,9 @@ export {
   hostedRunnerOs,
   applyWorkflowFix,
   readProbeExpression,
+  readFallback,
   readProbeTargets,
   parseTargetSpecs,
-  usesProbeVariable,
   PROBE_JOB_ID,
   PROBE_ACTION_PATH,
 } from "./workflows.js";
@@ -56,19 +55,16 @@ export type {
   RunsOnFix,
   WorkflowFixPlan,
   ProbeSpec,
+  RunnerFallback,
 } from "./workflows.js";
 export {
-  MARKER_PREFIX,
-  MARKER_MAX_AGE_SECONDS,
-  HEARTBEAT_INTERVAL_MS,
-  markerRef,
-  parseMarkerRef,
-  onlineLabels,
-  labelsAreOnline,
-} from "./markers.js";
-export type { Marker } from "./markers.js";
-export { MarkerPublisher } from "./heartbeat.js";
-export type { MarkerPublisherOptions } from "./heartbeat.js";
+  HostedUsageWatcher,
+  BILLING_BLOCK_PATTERN,
+  RERUN_WINDOW_MS,
+  CHECK_INTERVAL_MS,
+  startOfUtcMonth,
+} from "./usage.js";
+export type { HostedStatus, HostedUsageWatcherOptions, UsageCheckResult } from "./usage.js";
 export { proposeWorkflowFix, fixLabelFor, fixLabels } from "./fix.js";
 export type { WorkflowFixOptions, WorkflowFixResult, FixedJob } from "./fix.js";
 export { createConfirm, declineAll } from "./prompt.js";

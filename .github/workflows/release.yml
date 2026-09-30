@@ -3,9 +3,10 @@ name: Release
 # Publishes packages/gh-runner to npm when main lands a change to it. Merges
 # only ever move the patch digit — the major and minor stay exactly where a
 # human put them. To move those, set the version in
-# packages/gh-runner/package.json yourself (a manifest ahead of npm is taken at
-# its word and published as-is), or run this workflow from the Actions tab and
-# pick minor or major, which resets the patch to zero.
+# packages/gh-runner/package.json yourself (a version npm has never had is
+# taken at its word and published as-is — even a lower one, which is how the
+# version line was started over at 0.0.1), or run this workflow from the
+# Actions tab and pick minor or major, which resets the patch to zero.
 #
 # Nothing here reads commit messages. An earlier version looked for a keyword,
 # and the commit that documented the keyword tripped it — 0.1.0 went straight
@@ -78,6 +79,7 @@ jobs:
       name: ${{ steps.version.outputs.name }}
       version: ${{ steps.version.outputs.version }}
       bumped: ${{ steps.version.outputs.bumped }}
+      restart: ${{ steps.version.outputs.restart }}
       tarball: ${{ steps.pack.outputs.tarball }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -123,14 +125,35 @@ jobs:
             exit 0
           fi
 
-          # A manifest ahead of npm is a deliberate choice — someone picked that
-          # number in a PR. Never overrule it.
-          newest=$(printf '%s\n%s\n' "$manifest" "$published" | sort -V | tail -1)
-          if [ "$manifest" != "$published" ] && [ "$newest" = "$manifest" ]; then
-            echo "package.json ($manifest) is ahead of npm ($published) — publishing it as-is."
-            echo "version=$manifest" >> "$GITHUB_OUTPUT"
-            echo "bumped=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          # A manifest version npm has never had is a deliberate choice —
+          # someone picked that number in a PR. Never overrule it. Usually it's
+          # ahead of npm; below npm, it's a version line being started over, and
+          # `latest` has to be moved back to it explicitly (npm 11 refuses to do
+          # that implicitly). A version npm already has falls through to a bump.
+          if [ "$manifest" != "$published" ]; then
+            if npm view "$name@$manifest" version > manifest-view.out 2> manifest-view.log; then
+              known=$(tr -d '[:space:]' < manifest-view.out)
+            elif grep -qE 'E404|is not in this registry|No match found' manifest-view.log; then
+              known=""
+            else
+              echo "::error::couldn't ask npm whether $name@$manifest is published."
+              cat manifest-view.log
+              exit 1
+            fi
+
+            if [ -z "$known" ]; then
+              newest=$(printf '%s\n%s\n' "$manifest" "$published" | sort -V | tail -1)
+              if [ "$newest" = "$manifest" ]; then
+                echo "package.json ($manifest) is ahead of npm ($published) — publishing it as-is."
+              else
+                echo "package.json ($manifest) is below npm ($published) and has never been published —"
+                echo "starting the version line over, and moving latest to $manifest."
+                echo "restart=true" >> "$GITHUB_OUTPUT"
+              fi
+              echo "version=$manifest" >> "$GITHUB_OUTPUT"
+              echo "bumped=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
 
           # A merge is a patch, always. Anything larger is a decision, and a
@@ -242,6 +265,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           TARBALL: ${{ needs.build.outputs.tarball }}
+          RESTART: ${{ needs.build.outputs.restart }}
         run: |
           set -o pipefail
 
@@ -257,7 +281,12 @@ jobs:
             exit 1
           fi
 
-          npm publish "$tarball" --provenance --access public 2>&1 | tee publish.log
+          # Only a deliberate restart names the tag. Everywhere else npm's own
+          # refusal to move latest backwards stays switched on.
+          tag=()
+          if [ "$RESTART" = "true" ]; then tag=(--tag latest); fi
+
+          npm publish "$tarball" --provenance --access public "${tag[@]}" 2>&1 | tee publish.log
 
       # npm's failures here are accurate and unhelpful in equal measure, and the
       # 403 in particular has a non-obvious cause worth naming.

@@ -44,87 +44,64 @@ export const OS_NAMES: Readonly<Record<RunnerOs, string>> = {
  */
 export const FIX_BRANCH_PREFIX = "gh-runner/target-self-hosted";
 
-/** Where the probe action the fix PR calls is published from. */
-export const ACTION_REPO = "singerbj/gh-runner";
-export const ACTION_PATH = "actions/pick-runner";
-
 /**
- * The `uses:` the fix PR writes.
+ * The repository variable that moves jobs asking for `label` onto a gh-runner.
  *
- * A tag is a mutable pointer, and this one lands in someone else's workflow, so
- * it is resolved to the commit it names and pinned to that — with the tag left
- * in a trailing comment, the same way this repo pins the actions it consumes.
- * Without a resolved commit the tag is written on its own; a fix PR is more
- * useful than no fix PR, and the tag is still one this repo published.
+ * `runs-on` can read `vars` before any runner is involved, which is the whole
+ * trick: whether a repo can still start GitHub-hosted jobs can't be decided by
+ * a job — a job needs a runner, and "GitHub won't start one here" is the one
+ * answer it could never give. So `gh-runner` decides from outside Actions and
+ * hands the answer to the scheduler here.
+ *
+ * One variable per label, holding the label itself, so the workflow reads as
+ * plainly as it can: `vars.GH_RUNNER_LINUX || 'ubuntu-latest'`. A session only
+ * sets the ones for labels it actually serves — a Linux box never pulls macOS
+ * jobs into a queue nothing will answer.
+ *
+ * `gh-runner` and `gh-runner-*` map to `GH_RUNNER` and `GH_RUNNER_*`; any other
+ * label, from `--fix-label`, to `GH_RUNNER_LABEL_*`, so the two can't collide.
  */
-export function actionRef(version: string, sha?: string | null): string {
-  const tag = `v${version}`;
-  const base = `${ACTION_REPO}/${ACTION_PATH}`;
-  return sha ? `${base}@${sha} # ${tag}` : `${base}@${tag}`;
+export function runnerVariable(label: string): string {
+  const upper = label.toUpperCase().replaceAll(/[^A-Z0-9]+/g, "_");
+  const lower = label.toLowerCase();
+  if (lower === DEFAULT_LABEL) return "GH_RUNNER";
+  if (lower.startsWith(`${DEFAULT_LABEL}-`)) return upper;
+  return `GH_RUNNER_LABEL_${upper}`;
+}
+
+/** The label a {@link runnerVariable} name stands for — lossy only for `.` and `_` in custom labels. */
+export function labelForVariable(name: string): string | null {
+  if (name === "GH_RUNNER") return DEFAULT_LABEL;
+  const custom = /^GH_RUNNER_LABEL_([A-Z0-9_]+)$/.exec(name);
+  if (custom?.[1]) return custom[1].toLowerCase().replaceAll("_", "-");
+  const ours = /^GH_RUNNER_([A-Z0-9_]+)$/.exec(name);
+  if (ours?.[1]) return `${DEFAULT_LABEL}-${ours[1].toLowerCase().replaceAll("_", "-")}`;
+  return null;
+}
+
+/** A value for a GitHub expression string literal: `'...'`, quotes doubled. */
+export function expressionString(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
 }
 
 /**
- * Repository variable a live runner sets so the probe job itself can skip
- * GitHub-hosted runners.
+ * The `runs-on` value the workflow fix writes: the GitHub-hosted runner the job
+ * always used, unless `gh-runner` has said the repo can't start one.
  *
- * `runs-on` is resolved before any job starts, so it can't read the probe's
- * output — `needs` is what the probe exists to feed. `vars` is the one context
- * a runner can write to that `runs-on` can read, which makes this the only way
- * to keep a rewritten workflow off hosted runners entirely.
- */
-export const PROBE_RUNS_ON_VAR = "GH_RUNNER_PROBE_RUNS_ON";
-
-/**
- * What that variable holds while a runner is up.
+ * ```yaml
+ * runs-on: ${{ vars.GH_RUNNER_LINUX || 'ubuntu-latest' }}
+ * ```
  *
- * Always this exact value, whichever platform published it: every runner
- * registers {@link DEFAULT_LABEL}, so any of them can answer the probe job —
- * all it does is read refs. A constant also makes two sessions agree, so
- * publishing is idempotent and cleanup can't clobber a sibling's value.
+ * A hosted `runs-on` with several labels keeps them all, as `fromJSON('[...]')`.
  */
-export const PROBE_RUNS_ON_VALUE = JSON.stringify(["self-hosted", DEFAULT_LABEL]);
-
-/** The probe job's `runs-on` before this option existed, and without it. */
-export const HOSTED_PROBE_RUNS_ON = "ubuntu-latest";
-
-/**
- * The probe job's `runs-on` with the self-hosted probe on: the variable when a
- * runner published one, and the hosted runner when none did.
- *
- * A variable has no expiry — unlike the marker refs, which age out — so a
- * runner killed hard enough to skip its cleanup leaves this set and the probe
- * job queues until a runner comes back. That is the trade this option makes,
- * and why it is opt-in.
- */
-export const SELF_HOSTED_PROBE_RUNS_ON =
-  `\${{ vars.${PROBE_RUNS_ON_VAR} && fromJSON(vars.${PROBE_RUNS_ON_VAR}) ` +
-  `|| '${HOSTED_PROBE_RUNS_ON}' }}`;
-
-/**
- * The probe job's `runs-on` with `--no-hosted-fallback`: the labels themselves,
- * named outright.
- *
- * No variable and no expression, because there is nothing left to choose
- * between — both branches of {@link SELF_HOSTED_PROBE_RUNS_ON} would resolve to
- * this once the hosted side is gone. A workflow written this way queues until a
- * runner is up rather than falling through to a runner the repo can't start.
- */
-export const SELF_HOSTED_ONLY_PROBE_RUNS_ON = `[self-hosted, ${DEFAULT_LABEL}]`;
-
-/** The key a job reads out of the probe job's output — `linux`, `mac`, `windows`. */
-export const OS_KEYS: Readonly<Record<RunnerOs, string>> = {
-  osx: "mac",
-  linux: "linux",
-  win: "windows",
-};
-
-/** A probe output key for any label, so `--fix-label` works the same way. */
-export function probeKey(label: string): string {
-  const os = osForLabel(label);
-  if (os) return OS_KEYS[os];
-  const key = label
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  return /^[a-z]/.test(key) ? key : `runner_${key}`;
+export function fallbackRunsOn(
+  label: string,
+  hosted: readonly string[],
+  variable?: string,
+): string {
+  const fallback =
+    hosted.length === 1
+      ? expressionString(hosted[0] as string)
+      : `fromJSON(${expressionString(JSON.stringify(hosted))})`;
+  return `\${{ ${variable ?? `vars.${runnerVariable(label)}`} || ${fallback} }}`;
 }

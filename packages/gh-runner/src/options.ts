@@ -34,23 +34,6 @@ export interface RunnerOptions {
    */
   fixLabel: string | undefined;
   /**
-   * Let the probe job the fix writes run on a self-hosted runner too, and
-   * publish the repository variable it picks that up from.
-   *
-   * Off by default: it trades a job that always starts for one that can queue
-   * behind a runner that went away without cleaning up.
-   */
-  selfHostedProbe: boolean;
-  /**
-   * Never name a GitHub-hosted runner in the workflows the fix PR rewrites, so
-   * a job queues for a self-hosted runner instead of falling back.
-   *
-   * Off by default, and implies {@link selfHostedProbe}. For a repo that can't
-   * start hosted runners at all, falling back to one is the same failure with an
-   * extra step; for every other repo it is the safety net worth keeping.
-   */
-  noHostedFallback: boolean;
-  /**
    * Platforms to serve, as given on the command line. Empty means "ask", or
    * "just this machine" when there's no terminal to ask on.
    */
@@ -74,6 +57,8 @@ export interface RunnerOptions {
 export interface ParsedArgs {
   kind: "run" | "help" | "version";
   options: RunnerOptions;
+  /** Things worth telling the user that shouldn't stop the run — retired flags. */
+  warnings: string[];
 }
 
 export const USAGE = `gh-runner — temporarily register this machine as a GitHub Actions runner
@@ -106,24 +91,16 @@ OPTIONS
   --runner-version X.Y.Z Pin the runner version (default: latest release)
   --cache-dir PATH       Where to cache runner tarballs
   --no-workflow-check    Skip the runs-on audit of .github/workflows
-  --fix-workflows        Open the workflow PR without asking first
+  --fix-workflows        Open the workflow PR without asking first. It keeps each
+                         job on its GitHub-hosted runner, and moves it here only
+                         while the repo can't start hosted jobs (out of minutes, a
+                         spending limit, a failed payment)
   --no-fix-workflows     Never offer to open it
   --fix-jobs a,b         Limit the fix to these job ids
   --fix-label LABEL      Force one label on every job the fix PR rewrites
                          (default: the label for the OS each job already used —
                          ${OS_LABELS.osx} for macos-*, ${OS_LABELS.linux} for ubuntu-*,
                          ${OS_LABELS.win} for windows-*, ${DEFAULT_LABEL} otherwise)
-  --self-hosted-probe    Let the fix PR's probe job run here too, instead of always
-                         on a GitHub-hosted runner. Needed when hosted runners are
-                         unavailable to the repo — a spending limit, a failed
-                         payment. A runner that exits without cleaning up leaves the
-                         probe job queued until one is back.
-  --no-hosted-fallback   Leave no GitHub-hosted runner named anywhere in the fix PR.
-                         Every job asks for a self-hosted runner and queues until
-                         one is up, instead of falling back. Implies
-                         --self-hosted-probe. For repos where hosted runners are
-                         unavailable, not merely unwanted: CI cannot run without
-                         someone hosting a runner.
   -h, --help             Show this help
   -v, --version          Show the gh-runner version
 
@@ -137,6 +114,8 @@ IN YOUR WORKFLOW
       runs-on: [self-hosted, ${OS_LABELS.linux}]
     windows-only:
       runs-on: [self-hosted, ${OS_LABELS.win}]
+    hosted-unless-out-of-minutes:     # what --fix-workflows writes
+      runs-on: \${{ vars.GH_RUNNER_LINUX || 'ubuntu-latest' }}
 `;
 
 export function emptyOptions(): RunnerOptions {
@@ -149,8 +128,6 @@ export function emptyOptions(): RunnerOptions {
     fixWorkflows: "ask",
     fixJobs: [],
     fixLabel: undefined,
-    selfHostedProbe: false,
-    noHostedFallback: false,
     platforms: [],
     all: false,
     dockerImage: undefined,
@@ -205,6 +182,7 @@ export function assertRunnerName(name: string): string {
 
 export function parseArgs(argv: readonly string[]): ParsedArgs {
   const options = emptyOptions();
+  const warnings: string[] = [];
 
   const requireValue = (flag: string, value: string | undefined): string => {
     if (value === undefined || value.startsWith("-")) {
@@ -266,13 +244,14 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         i += 1;
         break;
       case "--self-hosted-probe":
-        options.selfHostedProbe = true;
-        break;
       case "--no-hosted-fallback":
-        options.noHostedFallback = true;
-        // The probe job gates every other one, so leaving it hosted would fail
-        // the workflow before a single fallback below it could matter.
-        options.selfHostedProbe = true;
+      case "--hosted-first":
+        // Modes of the probe job older versions wrote. There is one behaviour
+        // now, and it is what all three were reaching for; a script that still
+        // passes one keeps working.
+        warnings.push(
+          `${arg} is no longer needed — jobs stay on GitHub-hosted runners and move here only when the repo can't start them`,
+        );
         break;
       case "--all":
         options.all = true;
@@ -292,10 +271,10 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         break;
       case "-h":
       case "--help":
-        return { kind: "help", options };
+        return { kind: "help", options, warnings };
       case "-v":
       case "--version":
-        return { kind: "version", options };
+        return { kind: "version", options, warnings };
       default:
         if (arg.startsWith("-")) {
           throw new CliError(`unknown option: ${arg}  (try --help)`);
@@ -308,5 +287,5 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   // Validate names now so a typo fails before anything is registered.
   parseTargetNames(options.platforms);
 
-  return { kind: "run", options };
+  return { kind: "run", options, warnings };
 }

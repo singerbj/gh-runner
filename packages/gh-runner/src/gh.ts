@@ -428,6 +428,34 @@ export class GhClient {
     }
   }
 
+  /**
+   * A repository Actions variable's value: null when it doesn't exist, and
+   * undefined when the question couldn't be answered — which a caller deciding
+   * whether to change it has to treat differently from "not set".
+   */
+  async getVariable(repo: string, name: string): Promise<string | null | undefined> {
+    try {
+      return await this.api(`repos/${repo}/actions/variables/${name}`, { jq: ".value" });
+    } catch (error) {
+      const detail =
+        error instanceof CommandFailedError ? `${error.result.stderr}${error.result.stdout}` : "";
+      return /\b404\b|Not Found/.test(detail) ? null : undefined;
+    }
+  }
+
+  /**
+   * Re-runs the failed jobs of a workflow run. Best effort: a run already
+   * re-running, or too old to re-run, is simply left alone.
+   */
+  async rerunFailedJobs(repo: string, runId: number): Promise<boolean> {
+    try {
+      await this.api(`repos/${repo}/actions/runs/${runId}/rerun-failed-jobs`, { method: "POST" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Best effort — the variable only ever holds a runner label. */
   async deleteVariable(repo: string, name: string): Promise<boolean> {
     try {

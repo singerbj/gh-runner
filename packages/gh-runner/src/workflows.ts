@@ -2,7 +2,12 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { LineCounter, isMap, isScalar, isSeq, parseDocument } from "yaml";
 import type { Pair } from "yaml";
-import { HOSTED_PROBE_RUNS_ON, PROBE_RUNS_ON_VAR } from "./constants.js";
+import {
+  HOSTED_BLOCKED_VAR,
+  HOSTED_PROBE_RUNS_ON,
+  PROBE_RUNS_ON_VAR,
+  hostedFirstRunsOn,
+} from "./constants.js";
 import type { RunnerOs } from "./platform.js";
 
 export interface RunsOnTarget {
@@ -26,6 +31,19 @@ export interface RunsOnTarget {
    * on the answer it exists to produce.
    */
   probe: boolean;
+  /**
+   * Set for a job `--hosted-first` rewrote: the self-hosted labels it switches
+   * to while {@link HOSTED_BLOCKED_VAR} is set, and the hosted runner it uses
+   * otherwise. `labels` then holds the self-hosted side, so the audit counts the
+   * job as one this runner can take.
+   */
+  hostedFirst?: HostedFirstRunsOn;
+}
+
+/** What a `--hosted-first` `runs-on` resolves to, either way round. */
+export interface HostedFirstRunsOn {
+  labels: string[];
+  hosted: string[];
 }
 
 export type TargetVerdict =
@@ -60,6 +78,12 @@ export interface WorkflowReport {
    * {@link PROBE_RUNS_ON_VAR}, so a session here should publish it.
    */
   selfHostedProbe: boolean;
+  /**
+   * True when a job in this repo picks between hosted and self-hosted on
+   * {@link HOSTED_BLOCKED_VAR}, so a session here should watch for the repo
+   * running out of hosted minutes and set it.
+   */
+  hostedFirst: boolean;
 }
 
 export interface WorkflowParseResult {
@@ -144,6 +168,43 @@ export function readProbeFallback(value: string): string[] | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * `${{ vars.GH_RUNNER_HOSTED_BLOCKED && fromJSON('[...]') || 'ubuntu-latest' }}`
+ *
+ * Only the exact shape {@link hostedFirstRunsOn} writes is recognised, anchored
+ * at both ends — an expression someone wrote by hand stays theirs.
+ */
+const HOSTED_FIRST_EXPRESSION = new RegExp(
+  String.raw`^\$\{\{\s*vars\.${HOSTED_BLOCKED_VAR}\s*&&\s*fromJSON\(\s*'((?:[^']|'')*)'\s*\)\s*` +
+    String.raw`\|\|\s*(?:fromJSON\(\s*'((?:[^']|'')*)'\s*\)|'((?:[^']|'')*)')\s*\}\}$`,
+);
+
+function readJsonLabels(json: string): string[] | null {
+  try {
+    const parsed: unknown = JSON.parse(json.replaceAll("''", "'"));
+    return Array.isArray(parsed) &&
+      parsed.length > 0 &&
+      parsed.every((entry) => typeof entry === "string")
+      ? (parsed as string[])
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Both sides of a `--hosted-first` `runs-on`, or null for anything else. */
+export function readHostedFirst(value: string): HostedFirstRunsOn | null {
+  const match = HOSTED_FIRST_EXPRESSION.exec(value.trim());
+  if (!match?.[1]) return null;
+
+  const labels = readJsonLabels(match[1]);
+  const hosted =
+    match[3] !== undefined ? [match[3].replaceAll("''", "'")] : readJsonLabels(match[2] ?? "");
+  if (!labels || !hosted || hosted.length === 0 || hosted[0] === "") return null;
+
+  return { labels, hosted };
 }
 
 /** Label lists GitHub would treat as the same request. */
@@ -329,8 +390,11 @@ export function readRunsOnLabels(value: unknown): ResolvedLabels {
 function resolveRunsOn(
   read: ResolvedLabels,
   probes: ReadonlyMap<string, ProbeSpec>,
-): ResolvedLabels {
+): ResolvedLabels & { hostedFirst?: HostedFirstRunsOn } {
   if (read.unresolved === undefined) return read;
+
+  const hostedFirst = readHostedFirst(read.unresolved);
+  if (hostedFirst) return { labels: hostedFirst.labels, unresolved: undefined, hostedFirst };
 
   const probe = readProbeExpression(read.unresolved);
   if (!probe) return read;
@@ -396,7 +460,10 @@ export function parseWorkflow(source: string, file: string): WorkflowParseResult
         ? (jobValue as Record<string, unknown>)["runs-on"]
         : undefined;
 
-    const { labels, unresolved } = resolveRunsOn(readRunsOnLabels(runsOnValue), probes);
+    const { labels, unresolved, hostedFirst } = resolveRunsOn(
+      readRunsOnLabels(runsOnValue),
+      probes,
+    );
 
     targets.push({
       file,
@@ -407,6 +474,7 @@ export function parseWorkflow(source: string, file: string): WorkflowParseResult
       unresolved,
       range: [start, end],
       probe: probeJobs.has(job),
+      ...(hostedFirst ? { hostedFirst } : {}),
     });
   }
 
@@ -487,6 +555,7 @@ export async function inspectWorkflows(
       unparsed: [],
       suggestedLabels: [],
       selfHostedProbe: false,
+      hostedFirst: false,
     };
   }
 
@@ -539,6 +608,7 @@ export async function inspectWorkflows(
     unparsed,
     suggestedLabels,
     selfHostedProbe: verdicts.some((v) => usesProbeVariable(v.target)),
+    hostedFirst: verdicts.some((v) => v.target.hostedFirst !== undefined),
   };
 }
 
@@ -573,6 +643,17 @@ export interface WorkflowFixPlan {
    * can't start either.
    */
   noHostedFallback?: boolean;
+  /**
+   * No probe job at all: each job keeps the hosted runner it had, and switches
+   * to its self-hosted labels only while {@link HOSTED_BLOCKED_VAR} is set.
+   *
+   * The probe exists to answer "is a runner online?", and answering anything in
+   * a job needs a runner — which is exactly what a repo out of hosted minutes
+   * doesn't have. Reading a variable in `runs-on` needs none. A file an earlier
+   * run fixed with a probe is converted, and the probe job removed once nothing
+   * depends on it.
+   */
+  hostedFirst?: boolean;
 }
 
 interface Edit {
@@ -877,6 +958,10 @@ export function applyWorkflowFix(source: string, plan: WorkflowFixPlan): string 
   const existing = findProbeJob(source, jobNodes);
   if (plan.fixes.length === 0 && !existing) return source;
 
+  if (plan.hostedFirst) {
+    return applyEdits(source, hostedFirstEdits(source, plan, jobsNode.items as Pair[], existing));
+  }
+
   const jobId = existing?.jobId ?? uniqueJobId(plan.jobId, jobNodes);
   const resolved: WorkflowFixPlan = { ...plan, jobId };
 
@@ -962,7 +1047,11 @@ export function applyWorkflowFix(source: string, plan: WorkflowFixPlan): string 
     }
   }
 
-  // Back to front, so an earlier splice can't shift a later edit's offsets.
+  return applyEdits(source, edits);
+}
+
+/** Splices every edit in, back to front, so an earlier one can't shift a later one's offsets. */
+function applyEdits(source: string, edits: readonly Edit[]): string {
   // Insertions at the same offset keep the order they were queued in.
   const ordered = edits
     .map((edit, index) => ({ edit, index }))
@@ -974,4 +1063,164 @@ export function applyWorkflowFix(source: string, plan: WorkflowFixPlan): string 
   }
 
   return output;
+}
+
+/** Offset of the first character on the line containing `offset`. */
+function lineStartOf(source: string, offset: number): number {
+  return source.lastIndexOf("\n", offset - 1) + 1;
+}
+
+/** Offset just past the newline ending the line containing `offset`, or the end of the file. */
+function lineEndOf(source: string, offset: number): number {
+  const newline = source.indexOf("\n", offset);
+  return newline < 0 ? source.length : newline + 1;
+}
+
+/** Removes a whole `key: value` pair from a mapping, lines and all. */
+function removePair(source: string, pair: Pair): Edit | null {
+  const keyRange = (pair.key as { range?: [number, number, number] } | undefined)?.range;
+  const valueRange = (pair.value as { range?: [number, number, number] } | undefined)?.range;
+  if (!keyRange || !valueRange) return null;
+  const start = lineStartOf(source, keyRange[0]);
+  return { start, end: lineEndOf(source, trimEnd(source, start, valueRange[1])), text: "" };
+}
+
+/**
+ * Takes `jobId` back out of a job's `needs`, in whichever shape it is written:
+ * `[a, probe]`, a bare `probe`, or a block sequence. When it was the only
+ * dependency the whole `needs:` goes, rather than leaving an empty one behind.
+ */
+function needsRemoval(source: string, jobNode: unknown, jobId: string): Edit | null {
+  const needs = pairFor(jobNode, "needs");
+  if (!needs?.value) return null;
+
+  const value = needs.value;
+  if (isScalar(value)) {
+    return String(value.value) === jobId ? removePair(source, needs) : null;
+  }
+  if (!isSeq(value)) return null;
+
+  const items = value.items;
+  const index = items.findIndex((item) => isScalar(item) && String(item.value) === jobId);
+  if (index < 0) return null;
+  if (items.length === 1) return removePair(source, needs);
+
+  const range = (value as { range?: [number, number, number] }).range;
+  if (!range) return null;
+  const start = range[0];
+  const end = trimEnd(source, start, range[1]);
+  const text = source.slice(start, end);
+
+  if (text.startsWith("[")) {
+    const rest = items
+      .filter((_, i) => i !== index)
+      .map((item) => source.slice(...((item as { range: [number, number] }).range ?? [0, 0])));
+    return { start, end, text: `[${rest.join(", ")}]` };
+  }
+
+  // A block sequence: drop the `- probe` line.
+  const itemRange = (items[index] as { range?: [number, number, number] }).range;
+  if (!itemRange) return null;
+  const lineStart = lineStartOf(source, itemRange[0]);
+  return { start: lineStart, end: lineEndOf(source, itemRange[0]), text: "" };
+}
+
+/**
+ * The edits that move a file onto `--hosted-first`: every job to repoint reads
+ * {@link HOSTED_BLOCKED_VAR}, and every job an earlier run pointed at a probe
+ * job is converted too — its labels, and the hosted runner it came from, are
+ * both still in the probe's `targets` input.
+ *
+ * The probe job is only removed once nothing is left that depends on it. A job
+ * that `needs` it for a reason this tool didn't write keeps it, and keeps
+ * working.
+ */
+function hostedFirstEdits(
+  source: string,
+  plan: WorkflowFixPlan,
+  jobPairs: readonly Pair[],
+  existing: ExistingProbe | null,
+): Edit[] {
+  const edits: Edit[] = [];
+  const jobNodes = new Map<string, unknown>();
+  for (const pair of jobPairs) {
+    if (isScalar(pair.key)) jobNodes.set(String(pair.key.value), pair.value);
+  }
+
+  for (const fix of plan.fixes) {
+    const [start, end] = fix.target.range;
+    edits.push({
+      start,
+      end,
+      text: `runs-on: ${hostedFirstRunsOn(fix.labels, fix.target.labels)}`,
+    });
+  }
+
+  if (!existing) return edits;
+
+  const probeId = existing.jobId;
+  const repointed = new Set(plan.fixes.map((fix) => fix.target.job));
+  let converted = 0;
+  let keepProbe = false;
+
+  for (const [job, node] of jobNodes) {
+    if (job === probeId || repointed.has(job)) continue;
+
+    const range = runsOnRange(source, node);
+    const text = range ? source.slice(range[0], range[1]) : "";
+    const probe = readProbeExpression(text);
+    const needsProbe = needsMentions(node, probeId);
+    if (!needsProbe && probe?.jobId !== probeId) continue;
+
+    const spec = probe?.jobId === probeId ? existing.specs.get(probe.key) : undefined;
+    const hosted = spec ? (spec.hosted ?? spec.fallback) : [];
+    if (!range || !spec || spec.labels.length === 0 || hosted.length === 0) {
+      // Depends on the probe in a way this can't translate — leave both alone.
+      keepProbe = true;
+      continue;
+    }
+
+    edits.push({
+      start: range[0],
+      end: range[1],
+      text: `runs-on: ${hostedFirstRunsOn(spec.labels, hosted)}`,
+    });
+    converted += 1;
+
+    const needs = needsRemoval(source, node, probeId);
+    if (needs) edits.push(needs);
+  }
+
+  // Anything else still reading the probe's output — a step, an `if:` — would
+  // break without it. Every `runs-on` converted above accounts for one mention.
+  const mentions = source.split(`needs.${probeId}.`).length - 1;
+  if (keepProbe || mentions > converted) return edits;
+
+  const index = jobPairs.findIndex((pair) => isScalar(pair.key) && pair.key.value === probeId);
+  const probePair = jobPairs[index];
+  const keyRange = (probePair?.key as { range?: [number, number, number] } | undefined)?.range;
+  if (!probePair || !keyRange) return edits;
+
+  const start = lineStartOf(source, keyRange[0]);
+  const nextKey = (jobPairs[index + 1]?.key as { range?: [number, number, number] } | undefined)
+    ?.range;
+  const valueRange = (probePair.value as { range?: [number, number, number] } | undefined)?.range;
+  // Up to the next job's own comments, which were written about that job; the
+  // last job ends with its own value, not with the file — `jobs:` needn't be
+  // the last key in it.
+  const end = nextKey
+    ? commentBlockStart(source, lineStartOf(source, nextKey[0]))
+    : lineEndOf(source, trimEnd(source, start, valueRange?.[1] ?? source.length));
+  edits.push({ start, end, text: "" });
+
+  return edits;
+}
+
+/** True when a job lists `jobId` in its `needs`, in any shape. */
+function needsMentions(jobNode: unknown, jobId: string): boolean {
+  const value = pairFor(jobNode, "needs")?.value;
+  if (isScalar(value)) return String(value.value) === jobId;
+  if (isSeq(value))
+    return value.items.some((item) => isScalar(item) && String(item.value) === jobId);
+  return false;
 }

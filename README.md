@@ -15,6 +15,8 @@ It also audits `.github/workflows` first, so you find out that nothing targets `
 
 That PR doesn't hand your CI to a laptop that might be closed. Each job it repoints uses your machine while a runner is online and **the runner it already had** when none is, decided per run by [`actions/pick-runner`](actions/pick-runner) — which needs no secret, only `contents: read`.
 
+Or the other way round: `--hosted-first` keeps every job on GitHub-hosted runners and moves it to your machine **only while the repo is out of Actions minutes**. No job makes that call — it can't, with no runner to start on — so `gh-runner` makes it from outside Actions and hands it to `runs-on` in a repository variable. The [out-of-minutes simulation](.github/workflows/hosted-first-simulation.yml) proves the whole cycle on every change, against a mocked GitHub.
+
 ## What's in here
 
 | Path                  | Package               | What it is                                         |

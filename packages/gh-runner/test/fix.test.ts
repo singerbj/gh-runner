@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  HOSTED_BLOCKED_VAR,
   HOSTED_PROBE_RUNS_ON,
   PROBE_RUNS_ON_VAR,
   SELF_HOSTED_ONLY_PROBE_RUNS_ON,
@@ -450,5 +451,69 @@ describe("proposeWorkflowFix", () => {
     expect(pushed).toContain(`    runs-on: ${SELF_HOSTED_ONLY_PROBE_RUNS_ON}\n`);
     expect(pushed).not.toContain("|| 'ubuntu-latest' }}");
     expect(pushed).toContain('|| fromJSON(\'["self-hosted","gh-runner-linux"]\') }}');
+  });
+
+  it("keeps jobs hosted under --hosted-first, with no probe job to need a runner", async () => {
+    const result = await propose({ hostedFirst: true });
+    expect(result.status).toBe("opened");
+    if (result.status !== "opened") return;
+    expect(result).toMatchObject({ hostedFirst: true, selfHostedProbe: false });
+
+    const pushed = git(
+      checkout,
+      "show",
+      `refs/remotes/origin/${result.branch}:.github/workflows/ci.yml`,
+    );
+    expect(pushed).toContain(
+      `    runs-on: \${{ vars.${HOSTED_BLOCKED_VAR} && fromJSON('["self-hosted","gh-runner-linux"]') || 'ubuntu-latest' }}\n`,
+    );
+    expect(pushed).not.toContain("gh-runner-check");
+    expect(pushed).not.toContain("needs:");
+
+    const create = ghCalls.find((args) => args[0] === "pr" && args[1] === "create") ?? [];
+    const title = create[create.indexOf("--title") + 1] ?? "";
+    const body = create[create.indexOf("--body") + 1] ?? "";
+    expect(title).toMatch(/only when out of GitHub-hosted minutes/);
+    expect(body).toContain(HOSTED_BLOCKED_VAR);
+    expect(body).toContain(`gh variable delete ${HOSTED_BLOCKED_VAR}`);
+  });
+
+  it("switches a probe-mode repo to --hosted-first and back again", async () => {
+    const land = async (overrides: Parameters<typeof propose>[0]) => {
+      const result = await propose(overrides);
+      if (result.status !== "opened") throw new Error(`expected a PR, got ${result.status}`);
+      git(checkout, "fetch", "--quiet", "origin", result.branch);
+      git(checkout, "merge", "--quiet", "--ff-only", `origin/${result.branch}`);
+      git(checkout, "push", "--quiet", "origin", "main");
+      git(checkout, "push", "--quiet", "origin", "--delete", result.branch);
+      return {
+        result,
+        file: await readFile(join(checkout, ".github", "workflows", "ci.yml"), "utf8"),
+      };
+    };
+
+    const probe = await land({});
+    expect(probe.file).toContain("gh-runner-check:");
+
+    const hostedFirst = await land({ hostedFirst: true });
+    expect(hostedFirst.file).not.toContain("gh-runner-check");
+    expect(hostedFirst.file).toContain(`vars.${HOSTED_BLOCKED_VAR}`);
+
+    const back = await land({});
+    expect(back.result.jobs).toEqual([
+      {
+        file: ".github/workflows/ci.yml",
+        job: "build",
+        label: "gh-runner-linux",
+        from: ["ubuntu-latest"],
+      },
+    ]);
+    expect(back.file).toBe(probe.file);
+  });
+
+  it("refuses --hosted-first alongside the probe options", async () => {
+    await expect(propose({ hostedFirst: true, noHostedFallback: true })).rejects.toThrow(
+      /--hosted-first can't be combined/,
+    );
   });
 });

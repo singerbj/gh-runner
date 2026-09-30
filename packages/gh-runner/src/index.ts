@@ -32,6 +32,8 @@ export {
   PROBE_RUNS_ON_VALUE,
   HOSTED_PROBE_RUNS_ON,
   SELF_HOSTED_PROBE_RUNS_ON,
+  HOSTED_BLOCKED_VAR,
+  hostedFirstRunsOn,
 } from "./constants.js";
 export { GhClient, parseDigestFromReleaseBody } from "./gh.js";
 export type { GhClientOptions, RepoVisibility } from "./gh.js";
@@ -43,6 +45,7 @@ export {
   hostedRunnerOs,
   applyWorkflowFix,
   readProbeExpression,
+  readHostedFirst,
   readProbeTargets,
   parseTargetSpecs,
   usesProbeVariable,
@@ -56,7 +59,15 @@ export type {
   RunsOnFix,
   WorkflowFixPlan,
   ProbeSpec,
+  HostedFirstRunsOn,
 } from "./workflows.js";
+export {
+  HostedUsageWatcher,
+  BILLING_BLOCK_PATTERN,
+  RERUN_WINDOW_MS,
+  startOfUtcMonth,
+} from "./usage.js";
+export type { HostedStatus, HostedUsageWatcherOptions, UsageCheckResult } from "./usage.js";
 export {
   MARKER_PREFIX,
   MARKER_MAX_AGE_SECONDS,

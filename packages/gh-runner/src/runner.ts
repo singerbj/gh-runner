@@ -36,6 +36,7 @@ import {
 import type { RunnerOs, RunnerPlatform } from "./platform.js";
 import { declineAll } from "./prompt.js";
 import type { Confirm } from "./prompt.js";
+import { HostedUsageWatcher } from "./usage.js";
 import { availableTargets, parseTargetNames, planOptions, resolveTargets } from "./targets.js";
 import type { PlatformOption, ResolvedTarget } from "./targets.js";
 import { PROBE_JOB_ID, inspectWorkflows } from "./workflows.js";
@@ -279,6 +280,7 @@ export async function ghRunner(
       jobs: options.fixJobs,
       selfHostedProbe: options.selfHostedProbe,
       noHostedFallback: options.noHostedFallback,
+      hostedFirst: options.hostedFirst,
       commandRunner,
       gh,
       logger,
@@ -350,6 +352,15 @@ export async function ghRunner(
   });
   await markers.start(await gh.defaultBranch(repo).catch(() => "main"));
 
+  // Only where a job reads the variable — or a fix just asked for one that the
+  // audit, run before the PR existed, couldn't have seen. It is left set on
+  // exit: it describes the repo's billing, not this machine.
+  const usage =
+    options.hostedFirst || workflows?.hostedFirst
+      ? new HostedUsageWatcher({ repo, gh, logger })
+      : undefined;
+  await usage?.start();
+
   // Every runner gets to finish and clean up even if a sibling blows up.
   const settled = await Promise.allSettled(
     plans.map((plan) =>
@@ -357,7 +368,10 @@ export async function ghRunner(
         ? runDockerTarget({ ...shared, plan })
         : runNativeTarget({ ...shared, plan, runnerVersion: runnerVersion as string }),
     ),
-  ).finally(() => markers.stop());
+  ).finally(() => {
+    usage?.stop();
+    return markers.stop();
+  });
 
   const runners: RunSummary[] = [];
   let failure: unknown;
@@ -748,9 +762,19 @@ function reportFix(logger: Logger, fix: WorkflowFixResult, plans: readonly Targe
     case "opened":
       for (const { file, job, label, from } of fix.jobs) {
         const fallback = from.length > 0 ? from.join(", ") : "its current runner";
-        line(`${green("✓")} ${file} ${dim("→")} ${bold(job)} prefers ${label}, else ${fallback}`);
+        line(
+          fix.hostedFirst
+            ? `${green("✓")} ${file} ${dim("→")} ${bold(job)} stays on ${fallback}, else ${label}`
+            : `${green("✓")} ${file} ${dim("→")} ${bold(job)} prefers ${label}, else ${fallback}`,
+        );
       }
-      if (fix.noHostedFallback) {
+      if (fix.hostedFirst) {
+        line(
+          `${green("✓")} those jobs stay GitHub-hosted ${dim(
+            `— they move here only while GitHub won't start hosted jobs in this repo`,
+          )}`,
+        );
+      } else if (fix.noHostedFallback) {
         line(
           `${green("✓")} ${bold(PROBE_JOB_ID)} and every job it feeds ask for self-hosted runners ${dim(
             `— no GitHub-hosted runner is named anywhere, so jobs queue instead of falling back`,

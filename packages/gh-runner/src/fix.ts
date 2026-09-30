@@ -7,6 +7,7 @@ import {
   ACTION_REPO,
   DEFAULT_LABEL,
   FIX_BRANCH_PREFIX,
+  HOSTED_BLOCKED_VAR,
   HOSTED_PROBE_RUNS_ON,
   PROBE_RUNS_ON_VAR,
   SELF_HOSTED_ONLY_PROBE_RUNS_ON,
@@ -80,6 +81,17 @@ export interface WorkflowFixOptions {
    * fallbacks below could matter.
    */
   noHostedFallback?: boolean;
+  /**
+   * Keep every job on the GitHub-hosted runner it already uses, and switch it
+   * to this runner only while the repo can't start hosted jobs — out of
+   * minutes, a spending limit, a failed payment — as recorded in
+   * {@link HOSTED_BLOCKED_VAR}.
+   *
+   * Writes no probe job, so nothing has to run before a job can be scheduled;
+   * that is what makes it work in exactly the situation it exists for. Can't be
+   * combined with the probe options.
+   */
+  hostedFirst?: boolean;
   /** Overrides the generated branch name. Used verbatim, suffix and all. */
   branch?: string;
   commandRunner: CommandRunner;
@@ -114,6 +126,8 @@ export type WorkflowFixResult =
       selfHostedProbe: boolean;
       /** True when the PR leaves no GitHub-hosted runner named anywhere. */
       noHostedFallback: boolean;
+      /** True when jobs only move off hosted runners while the repo can't start them. */
+      hostedFirst: boolean;
     };
 
 /**
@@ -139,7 +153,10 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
   // the label comes from osLabel/DEFAULT_LABEL, which are ours already.
   const override =
     options.label === undefined ? undefined : assertLabel("--fix-label", options.label);
-  const labelFor = (target: RunsOnTarget) => fixLabelFor(target, override);
+  // A job coming back from `--hosted-first` keeps the label it already prefers.
+  const labelFor = (target: RunsOnTarget) =>
+    target.hostedFirst?.labels.find((label) => label.toLowerCase() !== "self-hosted") ??
+    fixLabelFor(target, override);
   const runId = randomBytes(4).toString("hex");
   const branch = options.branch ?? `${FIX_BRANCH_PREFIX}-${runId}`;
   const exec: ExecOptions = { cwd: repoRoot, ...(signal ? { signal } : {}) };
@@ -186,15 +203,31 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
     // behind, the branch the PR is actually built on. Only `hosted` is used, and
     // that verdict doesn't depend on the label set we pass.
     const report = await inspectWorkflows(worktree, [[override ?? DEFAULT_LABEL]]);
-    const wanted = options.jobs?.length
-      ? report.hosted.filter((target) => options.jobs?.includes(target.job))
-      : report.hosted;
+    const hostedFirst = options.hostedFirst ?? false;
+    if (hostedFirst && (options.noHostedFallback || options.selfHostedProbe)) {
+      throw new CliError("--hosted-first can't be combined with the probe options");
+    }
 
-    const noHostedFallback = options.noHostedFallback ?? false;
+    // Jobs a `--hosted-first` run already rewrote are GitHub-hosted jobs again as
+    // far as a probe mode is concerned: the runner they came from is written in
+    // their `runs-on`, which is all a probe needs to take them over. Under
+    // `--hosted-first` itself there is nothing to redo.
+    const converting = hostedFirst
+      ? []
+      : report.verdicts.flatMap(({ target }) =>
+          target.hostedFirst ? [{ ...target, labels: target.hostedFirst.hosted }] : [],
+        );
+    const candidates = [...report.hosted, ...converting];
+    const wanted = options.jobs?.length
+      ? candidates.filter((target) => options.jobs?.includes(target.job))
+      : candidates;
+
+    const noHostedFallback = !hostedFirst && (options.noHostedFallback ?? false);
     // The probe job is the one every other job waits on. Leaving it on a hosted
     // runner would fail the workflow before any fallback below could matter, so
     // asking for no hosted runners asks for this too.
-    const selfHostedProbe = noHostedFallback || (options.selfHostedProbe ?? false);
+    const selfHostedProbe =
+      !hostedFirst && (noHostedFallback || (options.selfHostedProbe ?? false));
 
     // A repo fixed by an earlier run may have nothing left to repoint and still
     // need this PR: its probe job, or the runner its jobs fall back to, can have
@@ -222,7 +255,9 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
       const source = await readFile(path, "utf8");
       const fixes: RunsOnFix[] = (byFile.get(file) ?? []).map((target) => {
         const label = labelFor(target);
-        return { target, key: probeKey(label), labels: ["self-hosted", label] };
+        // A job coming back from `--hosted-first` keeps the labels it had.
+        const labels = target.hostedFirst?.labels ?? ["self-hosted", label];
+        return { target, key: probeKey(label), labels };
       });
 
       const output = applyWorkflowFix(source, {
@@ -231,6 +266,7 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
         fixes,
         probeRunsOn: probeRunsOnFor(selfHostedProbe, noHostedFallback),
         noHostedFallback,
+        hostedFirst,
       });
       if (output === source) continue;
 
@@ -242,7 +278,7 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
       return { status: "no-changes" };
     }
 
-    const mode: ProbeMode = { selfHostedProbe, noHostedFallback };
+    const mode: ProbeMode = { selfHostedProbe, noHostedFallback, hostedFirst };
     const jobs: FixedJob[] = wanted.map((target) => ({
       file: target.file,
       job: target.job,
@@ -264,7 +300,7 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
       },
     );
 
-    const done = { branch, base, files, jobs, selfHostedProbe, noHostedFallback };
+    const done = { branch, base, files, jobs, selfHostedProbe, noHostedFallback, hostedFirst };
 
     if (options.dryRun) {
       return { status: "dry-run", url: null, ...done };
@@ -356,10 +392,11 @@ export function fixLabels(jobs: readonly FixedJob[]): string[] {
   return [...new Set(jobs.map((entry) => entry.label))];
 }
 
-/** Which of the three ways a run was asked to write the workflow. */
+/** Which of the four ways a run was asked to write the workflow. */
 interface ProbeMode {
   selfHostedProbe: boolean;
   noHostedFallback: boolean;
+  hostedFirst: boolean;
 }
 
 /** What a job falls through to when no runner is online, in prose. */
@@ -381,6 +418,25 @@ function jobList(jobs: readonly FixedJob[], mode: ProbeMode): string {
 
 function commitMessage(jobs: readonly FixedJob[], mode: ProbeMode): string {
   const labels = fixLabels(jobs);
+
+  if (mode.hostedFirst) {
+    return [
+      pullRequestTitle(jobs, mode),
+      "",
+      "Each job keeps the GitHub-hosted runner it uses today, and switches to",
+      `its self-hosted labels only while the ${HOSTED_BLOCKED_VAR}`,
+      "repository variable is set. gh-runner sets it when GitHub refuses to",
+      "start hosted jobs here — no minutes left, a spending limit, a failed",
+      "payment — and clears it once they start again.",
+      "",
+      "No job decides this, so nothing has to run before a job is scheduled.",
+      ...(jobs.length > 0
+        ? ["", ...labels.map((label) => `  ${label}: ${jobsFor(jobs, label).join(", ")}`)]
+        : []),
+      "",
+      "Generated by gh-runner.",
+    ].join("\n");
+  }
 
   const answer = mode.noHostedFallback
     ? "the self-hosted labels either way, so a job waits for a runner instead of"
@@ -420,6 +476,12 @@ function jobsFor(jobs: readonly FixedJob[], label: string): string[] {
 }
 
 function pullRequestTitle(jobs: readonly FixedJob[], mode: ProbeMode): string {
+  if (mode.hostedFirst) {
+    if (jobs.length === 0)
+      return `Use a self-hosted runner only when GitHub-hosted ones can't start`;
+    const count = `${jobs.length} job${jobs.length === 1 ? "" : "s"}`;
+    return `Move ${count} to a self-hosted runner only when out of GitHub-hosted minutes`;
+  }
   if (jobs.length === 0) {
     if (mode.noHostedFallback) return `Stop using GitHub-hosted runners in these workflows`;
     return mode.selfHostedProbe
@@ -433,6 +495,7 @@ function pullRequestTitle(jobs: readonly FixedJob[], mode: ProbeMode): string {
 }
 
 function pullRequestBody(jobs: readonly FixedJob[], mode: ProbeMode): string {
+  if (mode.hostedFirst) return hostedFirstBody(jobs);
   const minutes = Math.round(MARKER_MAX_AGE_SECONDS / 60);
 
   const lead = mode.noHostedFallback
@@ -563,4 +626,58 @@ function probeCaveat(mode: ProbeMode): string {
   skip its own cleanup — \`kill -9\`, a laptop losing power — leaves \`${PROBE_RUNS_ON_VAR}\` set,
   and the probe job then queues until a runner is back or you delete the variable. Deleting it is
   always safe: the next run falls back to \`${HOSTED_PROBE_RUNS_ON}\`.`;
+}
+
+/** The PR body for `--hosted-first`, which has no probe job to explain. */
+function hostedFirstBody(jobs: readonly FixedJob[]): string {
+  const list = jobs
+    .map(
+      (entry) =>
+        `- \`${entry.job}\` in \`${entry.file}\` → \`${entry.from.join(", ") || "its current runner"}\`, ` +
+        `else \`[self-hosted, ${entry.label}]\``,
+    )
+    .join("\n");
+
+  const changes =
+    jobs.length === 0
+      ? `Jobs that used to wait on the \`${PROBE_JOB_ID}\` job now read the variable below instead, and
+the \`${PROBE_JOB_ID}\` job is gone.`
+      : `Each of these jobs keeps running on the GitHub-hosted runner it uses today, and moves to a
+self-hosted runner only while GitHub won't start hosted jobs in this repo:
+
+${list}`;
+
+  return `## What this changes
+
+${changes}
+
+\`\`\`yaml
+runs-on: \${{ vars.${HOSTED_BLOCKED_VAR} && fromJSON('["self-hosted","${osLabel("linux")}"]') || 'ubuntu-latest' }}
+\`\`\`
+
+## How it knows
+
+Nothing in this workflow checks. Any check that ran as a job would need a runner to start on, and
+the one situation this is for — no minutes left, a spending limit reached, a failed payment — is
+the one where no GitHub-hosted job can start. \`runs-on\` can read repository variables before any
+runner is involved, so the decision is made outside Actions and handed over in one.
+
+[\`gh-runner\`](https://www.npmjs.com/package/@singerbj/gh-runner) makes it. While it is running it
+watches this repo's recent runs, and when GitHub refuses to start a job for billing reasons it sets
+\`${HOSTED_BLOCKED_VAR}\` and re-runs the jobs that were refused — they land on the self-hosted
+runner. It clears the variable when a GitHub-hosted job succeeds again, or when a new month
+starts and the included minutes reset; if hosted runners are still unavailable then, the first
+refused job flips it straight back.
+
+## Before you merge
+
+- Setting the variable needs admin on the repo — the same rights registering a runner needs.
+- If \`gh-runner\` isn't running when the minutes run out, those runs fail the way they do today;
+  the next time it starts it notices and re-runs the ones from the last day.
+- While the variable is set, these jobs queue until a runner is online. Deleting it is always safe
+  and sends the next run back to GitHub-hosted: \`gh variable delete ${HOSTED_BLOCKED_VAR}\`.
+
+---
+_Generated by [gh-runner](https://github.com/singerbj/gh-runner)_
+`;
 }

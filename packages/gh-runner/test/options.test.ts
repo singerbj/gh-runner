@@ -52,6 +52,20 @@ describe("parseArgs", () => {
     expect(options.selfHostedProbe).toBe(true);
   });
 
+  it("accepts --hosted-first on its own", () => {
+    const options = parseArgs(["--hosted-first"]).options;
+    expect(options.hostedFirst).toBe(true);
+    expect(options.selfHostedProbe).toBe(false);
+    expect(options.noHostedFallback).toBe(false);
+  });
+
+  it.each([["--self-hosted-probe"], ["--no-hosted-fallback"]])(
+    "refuses --hosted-first with %s, which needs a probe job it doesn't write",
+    (flag) => {
+      expect(() => parseArgs(["--hosted-first", flag])).toThrow(/--hosted-first writes no probe/);
+    },
+  );
+
   it.each([["-h"], ["--help"]])("treats %s as help", (flag) => {
     expect(parseArgs([flag]).kind).toBe("help");
   });

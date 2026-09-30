@@ -111,6 +111,54 @@ export const SELF_HOSTED_PROBE_RUNS_ON =
  */
 export const SELF_HOSTED_ONLY_PROBE_RUNS_ON = `[self-hosted, ${DEFAULT_LABEL}]`;
 
+/**
+ * Repository variable that says GitHub-hosted runners can't start jobs in this
+ * repo right now — included minutes used up, a spending limit hit, a failed
+ * payment.
+ *
+ * This is what `--hosted-first` hangs on. Whether a repo is out of minutes can't
+ * be decided by a job, because a job needs a runner and the whole question is
+ * whether one will start; `runs-on` can read `vars` before any runner is
+ * involved. So the decision is made outside Actions — by `gh-runner`, on the
+ * machine that is about to take the work — and handed to the scheduler here.
+ *
+ * Any non-empty value means blocked. `gh-runner` writes the time it noticed,
+ * which is what lets it retry the hosted runners once a new month begins.
+ */
+export const HOSTED_BLOCKED_VAR = "GH_RUNNER_HOSTED_BLOCKED";
+
+/** A value for a GitHub expression string literal: `'...'`, quotes doubled. */
+export function expressionString(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+/** A label list as an expression: a bare string for one, `fromJSON('[...]')` for more. */
+export function expressionLabels(labels: readonly string[]): string {
+  return labels.length === 1
+    ? expressionString(labels[0] as string)
+    : `fromJSON(${expressionString(JSON.stringify(labels))})`;
+}
+
+/**
+ * The `runs-on` value `--hosted-first` writes: the runner the job always used,
+ * unless {@link HOSTED_BLOCKED_VAR} says the repo can't start one.
+ *
+ * ```yaml
+ * runs-on: ${{ vars.GH_RUNNER_HOSTED_BLOCKED && fromJSON('["self-hosted","gh-runner-linux"]') || 'ubuntu-latest' }}
+ * ```
+ *
+ * The self-hosted side is always written with `fromJSON` — even a single label
+ * — so the shape is fixed and a later run can read it back.
+ */
+export function hostedFirstRunsOn(
+  labels: readonly string[],
+  hosted: readonly string[],
+  variable = `vars.${HOSTED_BLOCKED_VAR}`,
+): string {
+  const selfHosted = `fromJSON(${expressionString(JSON.stringify(labels))})`;
+  return `\${{ ${variable} && ${selfHosted} || ${expressionLabels(hosted)} }}`;
+}
+
 /** The key a job reads out of the probe job's output — `linux`, `mac`, `windows`. */
 export const OS_KEYS: Readonly<Record<RunnerOs, string>> = {
   osx: "mac",

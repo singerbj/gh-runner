@@ -1,0 +1,82 @@
+name: Out-of-minutes simulation
+
+# Proves `gh-runner --hosted-first` keeps CI running when GitHub-hosted runners
+# can't start — against a mocked GitHub, so it can be checked on every change
+# without anyone having to actually run out of minutes.
+#
+# `simulate` drives the real workflow rewrite, GhClient and HostedUsageWatcher
+# (through a real `gh`-shaped child process) against a stand-in for the Actions
+# API and scheduler: minutes run out, refused runs are noticed and re-run on the
+# self-hosted runner, a new month or a hosted success clears it, outages change
+# nothing. See packages/gh-runner/test/simulation.test.ts.
+#
+# `expression` has GitHub's own expression engine resolve the exact `runs-on`
+# the fix writes, in both states, and fails if it disagrees with the mock's.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Daily, so a change on GitHub's side shows up without a change on ours.
+    - cron: "17 6 * * *"
+
+concurrency:
+  group: hosted-first-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  simulate:
+    name: Simulate running out of minutes
+    # Written the way --hosted-first writes it: the workflow that tests the mode
+    # uses it, so GitHub parses and resolves this exact shape on every run.
+    runs-on: ${{ vars.GH_RUNNER_HOSTED_BLOCKED && fromJSON('["self-hosted","gh-runner-linux"]') || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run the simulation
+        working-directory: packages/gh-runner
+        run: npx vitest run test/simulation.test.ts test/hosted-first.test.ts test/usage.test.ts
+
+  expression:
+    name: runs-on resolves (${{ matrix.state }})
+    runs-on: ${{ vars.GH_RUNNER_HOSTED_BLOCKED && fromJSON('["self-hosted","gh-runner-linux"]') || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        # `blocked` stands in for vars.GH_RUNNER_HOSTED_BLOCKED; the expression
+        # below is otherwise byte-for-byte what the fix writes, which the
+        # simulation test asserts.
+        include:
+          - state: hosted runners available
+            blocked: ""
+            expected: '"ubuntu-latest"'
+          - state: out of minutes
+            blocked: "2026-09-30T00:00:00.000Z"
+            expected: '["self-hosted","gh-runner-linux"]'
+    steps:
+      - name: GitHub resolves it the way the simulation does
+        env:
+          RESOLVED: ${{ toJSON(matrix.blocked && fromJSON('["self-hosted","gh-runner-linux"]') || 'ubuntu-latest') }}
+          EXPECTED: ${{ matrix.expected }}
+        run: |
+          node -e '
+            const { deepStrictEqual } = require("node:assert");
+            const resolved = JSON.parse(process.env.RESOLVED);
+            const expected = JSON.parse(process.env.EXPECTED);
+            console.log("resolved:", JSON.stringify(resolved));
+            deepStrictEqual(resolved, expected);
+          '

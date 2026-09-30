@@ -51,6 +51,16 @@ export interface RunnerOptions {
    */
   noHostedFallback: boolean;
   /**
+   * Keep every job the fix PR rewrites on its GitHub-hosted runner, and move it
+   * here only while the repo can't start hosted jobs — out of minutes, a
+   * spending limit, a failed payment. No probe job: the switch is a repository
+   * variable this session sets when GitHub starts refusing hosted jobs, which
+   * `runs-on` reads without needing a runner first.
+   *
+   * Off by default, and exclusive with the probe options.
+   */
+  hostedFirst: boolean;
+  /**
    * Platforms to serve, as given on the command line. Empty means "ask", or
    * "just this machine" when there's no terminal to ask on.
    */
@@ -124,6 +134,12 @@ OPTIONS
                          --self-hosted-probe. For repos where hosted runners are
                          unavailable, not merely unwanted: CI cannot run without
                          someone hosting a runner.
+  --hosted-first         Keep jobs on their GitHub-hosted runner, and use this one
+                         only while the repo can't start hosted jobs (out of
+                         minutes, a spending limit, a failed payment). No probe
+                         job: while running, gh-runner notices GitHub refusing
+                         hosted jobs, flips a repository variable that runs-on
+                         reads, and re-runs what was refused.
   -h, --help             Show this help
   -v, --version          Show the gh-runner version
 
@@ -151,6 +167,7 @@ export function emptyOptions(): RunnerOptions {
     fixLabel: undefined,
     selfHostedProbe: false,
     noHostedFallback: false,
+    hostedFirst: false,
     platforms: [],
     all: false,
     dockerImage: undefined,
@@ -274,6 +291,9 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         // the workflow before a single fallback below it could matter.
         options.selfHostedProbe = true;
         break;
+      case "--hosted-first":
+        options.hostedFirst = true;
+        break;
       case "--all":
         options.all = true;
         break;
@@ -303,6 +323,12 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         // A bare word is a platform: `gh-runner mac linux`.
         options.platforms.push(arg);
     }
+  }
+
+  if (options.hostedFirst && (options.selfHostedProbe || options.noHostedFallback)) {
+    throw new CliError(
+      "--hosted-first writes no probe job, so it can't be combined with --self-hosted-probe or --no-hosted-fallback",
+    );
   }
 
   // Validate names now so a typo fails before anything is registered.

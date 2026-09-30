@@ -118,3 +118,7 @@ gh-runner-check:
 ```
 
 The probe job then queues like any other job, needs no admin rights, and cannot be affected by a stale variable.
+
+## When you only want your machine once the minutes run out
+
+Every mode above still has a job deciding where the others run, and that job needs a runner of its own. `gh-runner --fix-workflows --hosted-first` doesn't use this action at all: jobs stay on GitHub-hosted runners, and switch to self-hosted on a repository variable that `gh-runner` sets from outside Actions when GitHub starts refusing hosted jobs. See [the CLI docs](../../packages/gh-runner/README.md#only-when-youre-out-of-minutes---hosted-first).

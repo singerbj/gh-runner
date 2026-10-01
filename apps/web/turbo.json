@@ -5,6 +5,7 @@
     "build": {
       "inputs": [
         "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/gh-runner/package.json",
         "$TURBO_ROOT$/packages/gh-runner/deploy/**",
         "$TURBO_ROOT$/packages/gh-runner/prompts/**"
       ]

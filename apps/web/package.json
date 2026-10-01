@@ -12,6 +12,7 @@
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "devDependencies": {
+    "lucide-static": "^1.49.0",
     "typescript": "^7.0.2",
     "vitepress": "2.0.0-alpha.20",
     "vue": "^3.5.43"

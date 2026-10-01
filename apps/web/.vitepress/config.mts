@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { Container, Cpu, RefreshCw, Trash2 } from "lucide-static";
 import { defineConfig } from "vitepress";
 
 const REPO = "https://github.com/singerbj/gh-runner";
@@ -6,6 +7,19 @@ const REPO = "https://github.com/singerbj/gh-runner";
 const { version } = JSON.parse(
   readFileSync(new URL("../../../packages/gh-runner/package.json", import.meta.url), "utf8"),
 ) as { version: string };
+
+/**
+ * Lucide icons for the home page features, by name. A feature sets
+ * `lucide: <name>` in its frontmatter and gets the SVG inlined at build time.
+ */
+const ICONS: Readonly<Record<string, string>> = {
+  container: Container,
+  cpu: Cpu,
+  "refresh-cw": RefreshCw,
+  "trash-2": Trash2,
+};
+
+type Feature = { lucide?: string; icon?: string };
 
 export default defineConfig({
   title: "gh-runner",
@@ -17,6 +31,16 @@ export default defineConfig({
   outDir: "dist",
   cleanUrls: true,
   lastUpdated: false,
+
+  transformPageData({ frontmatter }) {
+    const features = frontmatter["features"] as Feature[] | undefined;
+    for (const feature of features ?? []) {
+      if (!feature.lucide) continue;
+      const svg = ICONS[feature.lucide];
+      if (!svg) throw new Error(`Unknown lucide icon "${feature.lucide}"; add it to ICONS`);
+      feature.icon = svg;
+    }
+  },
 
   head: [
     [

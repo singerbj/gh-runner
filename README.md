@@ -26,7 +26,7 @@ No job decides that — it couldn't, with no runner to start on. `gh-runner` not
 | Path                 | Package               | What it is                                         |
 | -------------------- | --------------------- | -------------------------------------------------- |
 | `packages/gh-runner` | `@singerbj/gh-runner` | The CLI and its programmatic API (TypeScript, ESM) |
-| `apps/web`           | `@gh-runner/web`      | The landing page (Vite, static, deployed to Pages) |
+| `apps/web`           | `@gh-runner/web`      | The docs site (VitePress, deployed to Pages)       |
 
 Full CLI docs live in [`packages/gh-runner/README.md`](packages/gh-runner/README.md).
 
@@ -35,7 +35,7 @@ Setting up a new project is one command, `npx @singerbj/gh-runner setup`, which 
 - **`ghcr.io/singerbj/gh-runner`**, a `linux/amd64` + `linux/arm64` image that keeps a Linux runner online permanently on any server with Docker, Coolify included. It's built from [`packages/gh-runner/deploy/`](packages/gh-runner/deploy/), which also holds the [`docker-compose.yml`](packages/gh-runner/deploy/docker-compose.yml) that runs it. [Details](packages/gh-runner/README.md#keeping-a-runner-online-with-docker).
 - **[`packages/gh-runner/prompts/setup-repo.md`](packages/gh-runner/prompts/setup-repo.md)**, a prompt that has a coding agent run `setup` and finish the job around it. [Details](packages/gh-runner/README.md#setting-a-repo-up-with-an-ai-agent).
 
-The compose file and the prompt are in the npm package and attached to every GitHub release as `docker-compose.yml` and `gh-runner-setup-prompt.md`. The landing page embeds them straight from these files.
+The compose file and the prompt are in the npm package and attached to every GitHub release as `docker-compose.yml` and `gh-runner-setup-prompt.md`. The docs site embeds them straight from these files.
 
 ## Development
 
@@ -43,7 +43,7 @@ Requires Node 20+.
 
 ```bash
 npm install          # install the whole workspace (and the git hooks)
-npm run dev          # watch-build the CLI and serve the landing page
+npm run dev          # watch-build the CLI and serve the docs site
 npm run build        # turbo build every package
 npm test             # turbo run the test suites
 npm run typecheck    # turbo typecheck every package
@@ -107,7 +107,7 @@ Nothing reads commit messages. An earlier version of this workflow looked for a 
 
 It runs as separate jobs, and the split is the point. `npm ci` and the test suite execute a few hundred third-party packages' code, and `NPM_TOKEN` would be readable by any one of them if it shared a job with them. So **`build` has no secrets**, and **`publish` installs nothing** — it publishes the tarball `build` already packed, which runs no lifecycle scripts. `token` goes first and does nothing but check the secret isn't empty, so a missing one fails in seconds instead of after a full build. The image jobs come after `publish` and never see `NPM_TOKEN`: they hold only `packages: write`, and build the image before they log in to the registry, so nothing the build installs sees that either.
 
-Only changes under `packages/gh-runner` (plus `package-lock.json`) trigger a release. That includes the Dockerfile, the compose file and the setup prompt, so editing any of them ships a new release, so landing work on the landing page or the root README mints nothing. The bump commit is pushed with `GITHUB_TOKEN`, which by design starts no further workflow runs — a release can't set off another release.
+Only changes under `packages/gh-runner` (plus `package-lock.json`) trigger a release. That includes the Dockerfile, the compose file and the setup prompt, so editing any of them ships a new release, so landing work on the docs site or the root README mints nothing. The bump commit is pushed with `GITHUB_TOKEN`, which by design starts no further workflow runs — a release can't set off another release.
 
 **If `main` is protected**, allow the GitHub Actions bot to push to it, or the workflow stops before publishing and says so. Bumping the manifest by hand in the PR is the way through otherwise.
 
@@ -119,15 +119,15 @@ Use a **classic Automation token**, or a granular token with **Read and write on
 
 The workflow checks the secret exists before building the tarball, and translates a `403` into the explanation above rather than leaving you with npm's wording.
 
-## The landing page
+## The docs site
 
-`apps/web` deploys to GitHub Pages through the [Pages workflow](.github/workflows/pages.yml), which builds the site and publishes it on every push to `main` that touches it — plus on demand from the Actions tab.
+`apps/web` is a [VitePress](https://vitepress.dev) site: a short home page plus the docs, one Markdown file per page under [`apps/web/docs/`](apps/web/docs/). The sidebar and nav live in [`apps/web/.vitepress/config.mts`](apps/web/.vitepress/config.mts).
+
+It deploys to GitHub Pages through the [Pages workflow](.github/workflows/pages.yml) on every push to `main` that touches it, plus on demand from the Actions tab.
 
 **One-time setup:** switch Pages on at **Settings → Pages → Build and deployment → Source: GitHub Actions**. A workflow can't do this for itself — creating a Pages site needs admin rights, and `GITHUB_TOKEN` doesn't have them — so the workflow checks first and tells you to click that if it's missing, rather than failing deep inside `configure-pages`.
 
-Once Pages is on, the site lands at **https://singerbj.github.io/gh-runner/**.
-
-The Vite build uses a relative `base`, so the same output works at a domain root or under a `/gh-runner/` project path without reconfiguration.
+Once Pages is on, the site lands at **https://singerbj.github.io/gh-runner/**. The `base` in the VitePress config is `/gh-runner/` to match; change it if the site moves to a custom domain.
 
 ## Security
 

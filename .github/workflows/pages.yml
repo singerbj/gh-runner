@@ -1,4 +1,4 @@
-name: Deploy landing page
+name: Deploy docs site
 
 on:
   push:
@@ -6,8 +6,10 @@ on:
     # The site is built from these; a change anywhere else can't affect it.
     paths:
       - "apps/web/**"
-      # The page embeds the compose file and the setup prompt.
+      # The docs embed the compose file and the setup prompt, and show the
+      # CLI's version.
       - "packages/gh-runner/deploy/**"
+      - "packages/gh-runner/package.json"
       - "packages/gh-runner/prompts/**"
       - "package.json"
       - "package-lock.json"
@@ -65,7 +67,7 @@ jobs:
         run: |
           test -s apps/web/dist/index.html
           echo "index.html: $(wc -c < apps/web/dist/index.html) bytes"
-          ls apps/web/dist/assets
+          ls apps/web/dist/assets apps/web/dist/guide
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:

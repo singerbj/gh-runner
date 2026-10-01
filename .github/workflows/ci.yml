@@ -98,3 +98,4 @@ jobs:
           fi
           echo "$output"
           grep -q "set GH_TOKEN and GH_RUNNER_REPO" <<< "$output"
+          grep -q "https://gh-runner.benjaminjsinger.com/guide/docker#configuration" <<< "$output"

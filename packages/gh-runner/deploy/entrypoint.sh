@@ -5,6 +5,7 @@ set -euo pipefail
 
 if [ -z "${GH_TOKEN:-}" ] || [ -z "${GH_RUNNER_REPO:-}" ]; then
   echo "gh-runner: set GH_TOKEN and GH_RUNNER_REPO (owner/name)" >&2
+  echo "gh-runner: how to: https://gh-runner.benjaminjsinger.com/guide/docker#configuration" >&2
   # A restart policy would otherwise retry this as fast as Docker allows.
   sleep 30
   exit 1

@@ -24,9 +24,10 @@ type Feature = { lucide?: string; icon?: string };
 export default defineConfig({
   title: "gh-runner",
   description: "Your machine as a GitHub Actions runner, for as long as the command runs.",
-  // GitHub Pages serves the site under /<repo>/. Change this if it moves to a
-  // custom domain.
-  base: "/gh-runner/",
+  // Where Pages serves the site from: "/" on the custom domain, "/gh-runner/"
+  // on github.io. The Pages workflow passes what configure-pages reports, so the
+  // asset URLs follow the domain setting instead of hard-coding one.
+  base: process.env["DOCS_BASE"] ?? "/",
   srcDir: "docs",
   outDir: "dist",
   cleanUrls: true,

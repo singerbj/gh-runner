@@ -31,6 +31,19 @@ docker compose logs -f   # wait for "Runner is live"
 
 ## Configuration
 
+The container needs `GH_TOKEN` and `GH_RUNNER_REPO`. Without them it logs `set GH_TOKEN and GH_RUNNER_REPO` and exits. Set them wherever you run it:
+
+- **Docker:** `-e GH_TOKEN=… -e GH_RUNNER_REPO=owner/name`
+- **Docker Compose:** a `.env` file next to `docker-compose.yml`, as [above](#docker-compose)
+- **Coolify:** the resource's **Environment Variables** tab, then redeploy
+
+### Creating the token
+
+1. Open [**New fine-grained token**](https://github.com/settings/personal-access-tokens/new).
+2. **Resource owner:** the repo's owner. **Repository access:** _Only select repositories_, and pick the one repo.
+3. **Repository permissions:** **Administration**, **Actions** and **Variables**, each _Read and write_.
+4. Generate it and use it as `GH_TOKEN`. `GH_RUNNER_REPO` is that repo as `owner/name`, e.g. `singerbj/gh-runner`.
+
 | Variable           | Required | Description                                                                                |
 | ------------------ | -------- | ------------------------------------------------------------------------------------------ |
 | `GH_TOKEN`         | yes      | Fine-grained token for one repo: **Administration**, **Actions**, **Variables** read/write |

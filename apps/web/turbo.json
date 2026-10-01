@@ -1,0 +1,13 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/gh-runner/deploy/**",
+        "$TURBO_ROOT$/packages/gh-runner/prompts/**"
+      ]
+    }
+  }
+}

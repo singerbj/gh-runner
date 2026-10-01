@@ -346,3 +346,135 @@ jobs:
             --title "$TAG" \
             --generate-notes \
             --target "$(git rev-parse HEAD)"
+
+  # The image the Docker Compose deployment runs, built on a native runner for
+  # each architecture rather than under emulation. It installs the version just
+  # published from npm, so it holds exactly what `npx` would. Holds
+  # packages: write and nothing else; the build runs before the registry login,
+  # so nothing it installs ever sees a credential.
+  image:
+    name: Image (${{ matrix.arch }})
+    needs: [build, publish]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # npm can take a moment to serve a version it has just accepted.
+      - name: Wait for npm to serve the release
+        env:
+          PACKAGE: ${{ needs.build.outputs.name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          for attempt in $(seq 1 30); do
+            if npm view "$PACKAGE@$VERSION" version > /dev/null 2>&1; then exit 0; fi
+            echo "npm doesn't serve $PACKAGE@$VERSION yet (attempt $attempt)."
+            sleep 10
+          done
+          echo "::error::npm still doesn't serve $PACKAGE@$VERSION after five minutes."
+          exit 1
+
+      - name: Build
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker build --pull \
+            --build-arg "GH_RUNNER_VERSION=$VERSION" \
+            --tag "$image:$VERSION-$ARCH" \
+            packages/gh-runner/deploy
+          # The image must hold the version it's tagged with.
+          installed=$(docker run --rm --entrypoint gh-runner "$image:$VERSION-$ARCH" --version)
+          if [ "$installed" != "$VERSION" ]; then
+            echo "::error::the image installed gh-runner $installed, not $VERSION."
+            exit 1
+          fi
+
+      - name: Push
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker push "$image:$VERSION-$ARCH"
+
+  # One multi-arch tag per release, plus `latest`, and the files that point at
+  # them attached to the GitHub release.
+  image-release:
+    name: Tag the image and attach the deployment files
+    needs: [build, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Tag ${{ needs.build.outputs.version }} and latest
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker buildx imagetools create \
+            --tag "$image:$VERSION" \
+            --tag "$image:latest" \
+            "$image:$VERSION-amd64" \
+            "$image:$VERSION-arm64"
+
+      # GHCR creates every new package private, and GITHUB_TOKEN can't change
+      # that. Checked anonymously, the way `docker compose pull` on someone's
+      # server will ask for it.
+      - name: Check the image is public
+        run: |
+          repo="${GITHUB_REPOSITORY,,}"
+          token=$(curl -fsS "https://ghcr.io/token?scope=repository:$repo:pull" | jq -r .token || true)
+          if [ -n "$token" ] && [ "$token" != "null" ] && curl -fsS -o /dev/null \
+              -H "Authorization: Bearer $token" \
+              -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+              "https://ghcr.io/v2/$repo/manifests/latest"; then
+            echo "ghcr.io/$repo is public."
+            exit 0
+          fi
+          echo "::warning::ghcr.io/$repo is private, so nobody else can pull it. Make it public once at https://github.com/users/${GITHUB_REPOSITORY_OWNER}/packages/container/${GITHUB_REPOSITORY#*/}/settings -> Danger Zone -> Change visibility. GitHub creates new packages private, and a workflow token can't change that."
+
+      # The attached compose file runs this release's image rather than
+      # `latest`, so .../releases/latest/download/docker-compose.yml is always
+      # the newest, and an older release's copy keeps running what it shipped.
+      - name: Attach the compose file and setup prompt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          mkdir -p release-assets
+          sed "s#$image:latest#$image:$VERSION#g" \
+            packages/gh-runner/deploy/docker-compose.yml > release-assets/docker-compose.yml
+          if ! grep -qF "image: $image:$VERSION" release-assets/docker-compose.yml; then
+            echo "::error::couldn't pin the image in docker-compose.yml — it no longer reads image: $image:latest."
+            exit 1
+          fi
+          cp packages/gh-runner/prompts/setup-repo.md release-assets/gh-runner-setup-prompt.md
+
+          # --clobber: a re-run replaces them instead of failing.
+          gh release upload "v$VERSION" \
+            release-assets/docker-compose.yml \
+            release-assets/gh-runner-setup-prompt.md \
+            --clobber

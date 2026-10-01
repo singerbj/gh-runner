@@ -91,7 +91,31 @@ const SHORT_NAME: Readonly<Record<RunnerOs, string>> = {
 };
 
 /**
- * Builds the argv for one of the runner's own scripts. Node won't spawn a
+ * The variables `gh` takes a token from. gh-runner needs them for its own `gh`
+ * calls, but the actions runner hands its environment to every job it runs,
+ * where one would give any workflow step a token with admin rights on the repo
+ * (and a `gh` that silently uses it).
+ */
+export const GH_TOKEN_VARIABLES: readonly string[] = [
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+];
+
+/**
+ * The environment the actions runner is started with: gh-runner's own, less
+ * {@link GH_TOKEN_VARIABLES}. Compared case-insensitively, as Windows does.
+ */
+export function runnerEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(env).filter(([name]) => !GH_TOKEN_VARIABLES.includes(name.toUpperCase())),
+  );
+}
+
+/**
+ * Builds the argv for one of the runner's own scripts, and the environment it
+ * runs with (see {@link runnerEnv}). Node won't spawn a
  * `.cmd` without a shell, so Windows goes through `cmd.exe` explicitly — argv
  * stays a real array rather than a concatenated command line.
  */
@@ -101,12 +125,16 @@ function runnerCommand(
   script: "config" | "run",
   args: readonly string[],
   env: NodeJS.ProcessEnv,
-): { command: string; args: string[] } {
+): { command: string; args: string[]; env: NodeJS.ProcessEnv } {
   const path = join(runnerDir, runnerScript(platform, script));
   if (platform.os === "win") {
-    return { command: env["COMSPEC"] || "cmd.exe", args: ["/d", "/s", "/c", path, ...args] };
+    return {
+      command: env["COMSPEC"] || "cmd.exe",
+      args: ["/d", "/s", "/c", path, ...args],
+      env: runnerEnv(env),
+    };
   }
-  return { command: path, args: [...args] };
+  return { command: path, args: [...args], env: runnerEnv(env) };
 }
 
 /** Everything one platform's runner needs, resolved and ready to go. */
@@ -285,7 +313,11 @@ export async function ghRunner(
       logger,
       ...(signal ? { signal } : {}),
     });
-    reportFix(logger, fix, plans);
+    reportFix(
+      logger,
+      fix,
+      plans.map((plan) => plan.allLabels),
+    );
     if (fix.status === "opened" || fix.status === "dry-run") {
       fixedLabels.push(...fix.jobs.map((job) => job.label));
     }
@@ -550,6 +582,7 @@ async function runNativeTarget(run: TargetRun & { runnerVersion: string }): Prom
     try {
       const result = await commandRunner(config.command, config.args, {
         cwd: runnerDir,
+        env: config.env,
         ...(signal ? { signal } : {}),
       });
       if (result.code !== 0) {
@@ -570,6 +603,7 @@ async function runNativeTarget(run: TargetRun & { runnerVersion: string }): Prom
     const stdio: ExecOptions = plan.prefix ? { prefix: plan.prefix } : { inherit: true };
     await commandRunner(runScript.command, runScript.args, {
       cwd: runnerDir,
+      env: runScript.env,
       ...stdio,
       ...(run.onRunnerSpawn ? { onSpawn: run.onRunnerSpawn } : {}),
     });
@@ -773,7 +807,16 @@ function reportWorkflows(logger: Logger, report: WorkflowReport): void {
   }
 }
 
-function reportFix(logger: Logger, fix: WorkflowFixResult, plans: readonly TargetPlan[]): void {
+/**
+ * Says what a workflow fix did. `served` is the label sets of the runners this
+ * session registers, so jobs moved to a label nobody here serves get a hint;
+ * `gh-runner setup` registers nothing and passes none.
+ */
+export function reportFix(
+  logger: Logger,
+  fix: WorkflowFixResult,
+  served?: ReadonlyArray<readonly string[]>,
+): void {
   const { dim, green, bold } = logger.styles;
   const line = (text: string) => logger.raw(`    ${text}\n`);
 
@@ -788,8 +831,6 @@ function reportFix(logger: Logger, fix: WorkflowFixResult, plans: readonly Targe
       );
       return;
     case "dry-run":
-      line(dim(`would change ${fix.files.join(", ")} on ${fix.branch}`));
-      return;
     case "opened":
       for (const { file, job, label, from } of fix.jobs) {
         const hosted = from.length > 0 ? from.join(", ") : "its current runner";
@@ -802,10 +843,16 @@ function reportFix(logger: Logger, fix: WorkflowFixResult, plans: readonly Targe
       if (fix.removesProbe) {
         line(`${green("✓")} removed the ${bold(PROBE_JOB_ID)} job an older version added`);
       }
+      if (fix.status === "dry-run") {
+        line(
+          dim(`would change ${fix.files.join(", ")} on ${fix.branch} — dry run, nothing pushed`),
+        );
+        return;
+      }
       // A macOS job repointed from a Linux-only session keeps running — on
       // GitHub. Say so, and how to bring it here instead.
-      for (const label of fixLabels(fix.jobs)) {
-        if (plans.some((plan) => plan.allLabels.includes(label))) continue;
+      for (const label of served ? fixLabels(fix.jobs) : []) {
+        if (served?.some((labels) => labels.includes(label))) continue;
         const os = osForLabel(label);
         line(
           `  ${dim(
@@ -847,7 +894,7 @@ async function deregisterNative(
 
   const remove = runnerCommand(platform, runnerDir, "config", ["remove", "--token", token], env);
   try {
-    await commandRunner(remove.command, remove.args, { cwd: runnerDir });
+    await commandRunner(remove.command, remove.args, { cwd: runnerDir, env: remove.env });
   } catch {
     // Best effort: an ephemeral runner is removed server-side after its job
     // anyway, and we are on the way out.

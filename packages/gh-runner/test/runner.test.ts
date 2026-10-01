@@ -8,7 +8,8 @@ import { CliError } from "../src/errors.js";
 import type { CommandRunner, ExecResult } from "../src/exec.js";
 import { GhClient } from "../src/gh.js";
 import { silentLogger } from "../src/logger.js";
-import { ghRunner } from "../src/runner.js";
+import { dockerRunArgs } from "../src/docker.js";
+import { ghRunner, runnerEnv } from "../src/runner.js";
 import type { RunContext } from "../src/runner.js";
 import type { RunnerPlatform } from "../src/platform.js";
 
@@ -21,12 +22,13 @@ const MAC_TARBALL = `actions-runner-osx-arm64-${VERSION}.tar.gz`;
 interface Recorded {
   command: string;
   args: readonly string[];
+  env?: NodeJS.ProcessEnv | undefined;
 }
 
 function stubRunner(overrides: Record<string, ExecResult> = {}) {
   const calls: Recorded[] = [];
-  const runner: CommandRunner = (command, args) => {
-    calls.push({ command, args });
+  const runner: CommandRunner = (command, args, options) => {
+    calls.push({ command, args, env: options?.env });
     const line = `${command} ${args.join(" ")}`;
     for (const [needle, result] of Object.entries(overrides)) {
       if (line.includes(needle)) return Promise.resolve(result);
@@ -521,3 +523,67 @@ describe("interruption", () => {
     expect(calls.some((c) => c.command.endsWith("run.sh"))).toBe(false);
   });
 });
+
+describe("the actions runner's environment", () => {
+  const env = {
+    PATH: "/usr/bin",
+    HOME: "/home/me",
+    GH_TOKEN: "github_pat_admin",
+    GITHUB_TOKEN: "ghp_admin",
+    gh_enterprise_token: "lowercase-on-windows",
+    GITHUB_ENTERPRISE_TOKEN: "ghe_admin",
+  };
+
+  it("drops every variable gh reads a token from, whatever its case", () => {
+    expect(runnerEnv(env)).toEqual({ PATH: "/usr/bin", HOME: "/home/me" });
+  });
+
+  it("never reaches config.sh, run.sh or config.sh remove", async () => {
+    const { runner: stub, calls } = stubRunner();
+    // Make registration look real, so cleanup runs `config.sh remove` too.
+    const runner: CommandRunner = async (command, args, options) => {
+      if (command.endsWith("config.sh") && args[0] !== "remove" && options?.cwd) {
+        await writeFile(join(options.cwd, ".runner"), "{}");
+      }
+      return stub(command, args, options);
+    };
+
+    await ghRunner(
+      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
+      { ...base(runner), env },
+    );
+
+    const scripts = calls.filter((c) => /(config|run)\.sh$/.test(c.command));
+    expect(scripts.map((c) => [c.command.split("/").pop(), c.args[0] === "remove"])).toEqual([
+      ["config.sh", false],
+      ["run.sh", false],
+      ["config.sh", true],
+    ]);
+    for (const call of scripts) {
+      expect(call.env).toEqual({ PATH: "/usr/bin", HOME: "/home/me" });
+    }
+  });
+
+  it("isn't handed to a containerised runner either", () => {
+    const args = dockerRunArgs({
+      repo: "octocat/private-thing",
+      image: "ghcr.io/actions/actions-runner:latest",
+      dockerPlatform: undefined,
+      containerName: "box",
+      runnerName: "box",
+      labels: ["gh-runner"],
+      ephemeral: false,
+      registrationToken: "REG123",
+    });
+    // Only name-only `-e` flags for the registration values reach the container.
+    const forwarded = args.filter((_, i) => args[i - 1] === "-e");
+    expect(forwarded.filter((name) => GH_TOKEN_NAMES.has(name.split("=")[0] ?? ""))).toEqual([]);
+  });
+});
+
+const GH_TOKEN_NAMES = new Set([
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+]);

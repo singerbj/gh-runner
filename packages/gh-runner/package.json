@@ -38,6 +38,8 @@
   },
   "files": [
     "dist",
+    "deploy",
+    "prompts",
     "README.md",
     "LICENSE"
   ],

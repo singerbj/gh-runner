@@ -7,6 +7,7 @@ import { createLogger } from "./logger.js";
 import { USAGE, parseArgs } from "./options.js";
 import { createConfirm } from "./prompt.js";
 import { ghRunner, terminalPlatformPicker } from "./runner.js";
+import { ghRunnerSetup } from "./setup.js";
 import { readVersion } from "./version.js";
 
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<number> {
@@ -29,6 +30,20 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   if (parsed.kind === "version") {
     process.stdout.write(`${readVersion()}\n`);
     return 0;
+  }
+
+  if (parsed.kind === "setup") {
+    try {
+      const { fix } = await ghRunnerSetup(parsed.options, { logger });
+      return fix.status === "branch-exists" ? 1 : 0;
+    } catch (error) {
+      if (error instanceof CliError) {
+        logger.error(error.message);
+        return error.exitCode;
+      }
+      logger.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
+      return 1;
+    }
   }
 
   const abort = new AbortController();

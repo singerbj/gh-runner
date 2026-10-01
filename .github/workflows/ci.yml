@@ -71,3 +71,30 @@ jobs:
         run: |
           node packages/gh-runner/dist/cli.js --help
           node packages/gh-runner/dist/cli.js --version
+
+  # Builds the image the Docker Compose deployment runs, from whatever npm has
+  # now, so a Dockerfile that stopped building shows up here and not in the
+  # middle of a release.
+  image-smoke:
+    name: Docker image builds and starts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build
+        run: docker build --pull --tag gh-runner-smoke packages/gh-runner/deploy
+
+      - name: It runs gh-runner as an unprivileged user under tini
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint gh-runner gh-runner-smoke --version
+          docker run --rm --entrypoint gh gh-runner-smoke --version
+          test "$(docker run --rm --entrypoint id gh-runner-smoke -u)" != 0
+
+          # Without its two variables it says which, rather than failing inside gh.
+          if output=$(docker run --rm gh-runner-smoke 2>&1); then
+            echo "::error::the image started without GH_TOKEN and GH_RUNNER_REPO."
+            exit 1
+          fi
+          echo "$output"
+          grep -q "set GH_TOKEN and GH_RUNNER_REPO" <<< "$output"

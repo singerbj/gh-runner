@@ -1,0 +1,33 @@
+# An always-on Linux gh-runner: `docker compose up -d` on any server with
+# Docker, or paste into Coolify as a "Docker Compose Empty" resource.
+#
+# Set GH_TOKEN and GH_RUNNER_REPO in a .env file next to this, or in Coolify's
+# Environment Variables tab:
+#   GH_TOKEN        fine-grained token for the repo, with Administration,
+#                   Actions and Variables read/write
+#   GH_RUNNER_REPO  owner/name, a private repo
+# Optional: GH_RUNNER_NAME (default: the container's hostname) and
+# GH_RUNNER_LABELS (extra labels, comma-separated).
+#
+# Jobs don't inherit GH_TOKEN, but they run as the same user as gh-runner and
+# could read it from /proc, so scope it to the one repo. Jobs get no Docker
+# socket and nothing from the host, so `docker build`, `services:` and
+# `container:` jobs won't run here.
+
+services:
+  gh-runner:
+    image: ghcr.io/singerbj/gh-runner:latest
+    restart: unless-stopped
+    # Time for gh-runner to deregister the runner when the container stops.
+    stop_grace_period: 60s
+    environment:
+      GH_TOKEN: ${GH_TOKEN}
+      GH_RUNNER_REPO: ${GH_RUNNER_REPO}
+      GH_RUNNER_NAME: ${GH_RUNNER_NAME:-}
+      GH_RUNNER_LABELS: ${GH_RUNNER_LABELS:-}
+    volumes:
+      # The runner download cache and job workspaces, kept across redeploys.
+      - gh-runner:/home/node
+
+volumes:
+  gh-runner:

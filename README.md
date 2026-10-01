@@ -127,7 +127,7 @@ It deploys to GitHub Pages through the [Pages workflow](.github/workflows/pages.
 
 **One-time setup:** switch Pages on at **Settings → Pages → Build and deployment → Source: GitHub Actions**. A workflow can't do this for itself — creating a Pages site needs admin rights, and `GITHUB_TOKEN` doesn't have them — so the workflow checks first and tells you to click that if it's missing, rather than failing deep inside `configure-pages`.
 
-Once Pages is on, the site lands at **https://singerbj.github.io/gh-runner/**. The `base` in the VitePress config is `/gh-runner/` to match; change it if the site moves to a custom domain.
+The site is served at **https://gh-runner.benjaminjsinger.com/**, the custom domain set under Settings → Pages. The workflow builds with whatever base path `configure-pages` reports, so dropping the custom domain (and serving from `singerbj.github.io/gh-runner/`) needs no config change.
 
 ## Security
 

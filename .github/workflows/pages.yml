@@ -40,8 +40,6 @@ jobs:
 
       - run: npm ci
 
-      - run: npx turbo run build --filter=@gh-runner/web
-
       # Pages has to be switched on once, by hand, at
       # Settings -> Pages -> Source: GitHub Actions. `enablement: true` looks
       # like it would do that for you, but creating a Pages site needs admin
@@ -61,13 +59,25 @@ jobs:
           echo "token can't do it: creating a Pages site requires admin rights."
           exit 1
 
-      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - id: pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      # Build for wherever Pages actually serves the site: base_path is "" on
+      # the custom domain and "/gh-runner" on github.io. A wrong base still
+      # builds and deploys green, but every script and stylesheet 404s.
+      - run: npx turbo run build --filter=@gh-runner/web
+        env:
+          DOCS_BASE: ${{ steps.pages.outputs.base_path }}/
 
       - name: Check the build produced a site
         run: |
           test -s apps/web/dist/index.html
           echo "index.html: $(wc -c < apps/web/dist/index.html) bytes"
           ls apps/web/dist/assets apps/web/dist/guide
+          grep -q "src=\"${DOCS_BASE}assets/" apps/web/dist/index.html \
+            || { echo "::error::index.html doesn't load its assets from ${DOCS_BASE}assets/"; exit 1; }
+        env:
+          DOCS_BASE: ${{ steps.pages.outputs.base_path }}/
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:

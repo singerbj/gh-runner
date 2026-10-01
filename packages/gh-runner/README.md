@@ -341,7 +341,7 @@ The image is `node:lts` plus `gh`, `tini` and `gh-runner`, running `gh-runner li
 - add a short "Self-hosted fallback" section to your README, and
 - finish with a PR that has a table of every job it changed or skipped.
 
-Every release attaches it as `gh-runner-setup-prompt.md`, and the [docs site](https://singerbj.github.io/gh-runner/guide/ai-setup) has a copy button. The test suite checks each hand-edit example in the prompt against the expression `gh-runner` itself writes, so the two can't drift apart.
+Every release attaches it as `gh-runner-setup-prompt.md`, and the [docs site](https://gh-runner.benjaminjsinger.com/guide/ai-setup) has a copy button. The test suite checks each hand-edit example in the prompt against the expression `gh-runner` itself writes, so the two can't drift apart.
 
 ## Safety
 

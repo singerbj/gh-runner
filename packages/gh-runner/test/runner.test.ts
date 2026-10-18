@@ -438,11 +438,31 @@ describe("the workflow audit", () => {
     return repoRoot;
   };
 
+  /** gh answering for a default branch `main` holding one `ci.yml`. */
+  const onGitHub = (body: string): Record<string, ExecResult> => ({
+    defaultBranchRef: ok("main\n"),
+    "contents/.github/workflows/ci.yml?ref=main": ok(body),
+    "contents/.github/workflows?ref=main": ok("ci.yml\n"),
+  });
+
+  const HOSTED = ["jobs:", "  build:", "    runs-on: ubuntu-latest"].join("\n");
+  const FALLBACK = [
+    "jobs:",
+    "  build:",
+    "    runs-on: ${{ vars.GH_RUNNER_LINUX || 'ubuntu-latest' }}",
+  ].join("\n");
+
+  const warnings = (lines: string[]) => ({
+    ...recordingLogger(lines),
+    warn: (message: string) => lines.push(`warning: ${message}\n`),
+  });
+
   it("audits against every runner's labels and offers to fix", async () => {
-    const repoRoot = await withWorkflow(
-      ["jobs:", "  build:", "    runs-on: ubuntu-latest"].join("\n"),
-    );
-    const { runner } = stubRunner({ "rev-parse --show-toplevel": ok(repoRoot) });
+    const repoRoot = await withWorkflow(HOSTED);
+    const { runner } = stubRunner({
+      "rev-parse --show-toplevel": ok(repoRoot),
+      ...onGitHub(HOSTED),
+    });
     const asked: string[] = [];
 
     const { workflows } = await ghRunner(
@@ -466,13 +486,10 @@ describe("the workflow audit", () => {
   });
 
   it("counts a job as matching when any one runner can take it", async () => {
-    const repoRoot = await withWorkflow(
-      ["jobs:", "  only-linux:", "    runs-on: [self-hosted, gh-runner-linux]"].join("\n"),
+    const body = ["jobs:", "  only-linux:", "    runs-on: [self-hosted, gh-runner-linux]"].join(
+      "\n",
     );
-    const { runner } = stubRunner({
-      "rev-parse --show-toplevel": ok(repoRoot),
-      "runners?per_page": ok(""),
-    });
+    const { runner } = stubRunner({ "runners?per_page": ok(""), ...onGitHub(body) });
     let asked = 0;
 
     // A Mac serving both macOS and Linux: the Linux-only job matches.
@@ -494,7 +511,102 @@ describe("the workflow audit", () => {
 
     expect(workflows?.matches.map((t) => t.job)).toEqual(["only-linux"]);
     expect(asked).toBe(0);
+  });
+
+  it("reads the default branch on GitHub, not a stale checkout", async () => {
+    // The checkout predates the merged fix; GitHub runs what's on main.
+    const repoRoot = await withWorkflow(HOSTED);
+    const { runner } = stubRunner({
+      "rev-parse --show-toplevel": ok(repoRoot),
+      ...onGitHub(FALLBACK),
+    });
+    const lines: string[] = [];
+    let asked = 0;
+
+    const { workflows } = await ghRunner(
+      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
+      {
+        ...base(runner),
+        logger: warnings(lines),
+        confirm: () => {
+          asked += 1;
+          return Promise.resolve(true);
+        },
+      },
+    );
+
+    expect(workflows?.hosted).toEqual([]);
+    expect(workflows?.fallbackFiles).toEqual([".github/workflows/ci.yml"]);
+    // Nothing to fix, so nothing offered — and the watcher is on.
+    expect(asked).toBe(0);
+    const output = lines.join("");
+    expect(output).toContain("Checking .github/workflows on main");
+    expect(output).toContain("will set GH_RUNNER_LINUX");
     await rm(repoRoot, { recursive: true, force: true });
+  });
+
+  it("scans without a checkout at all", async () => {
+    const { runner } = stubRunner(onGitHub(FALLBACK));
+    const { workflows } = await ghRunner(
+      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
+      base(runner),
+    );
+    expect(workflows?.matches.map((t) => t.job)).toEqual(["build"]);
+  });
+
+  it("falls back to the checkout, and says so, when GitHub can't be read", async () => {
+    const repoRoot = await withWorkflow(FALLBACK);
+    const { runner } = stubRunner({
+      "rev-parse --show-toplevel": ok(repoRoot),
+      defaultBranchRef: ok("main\n"),
+      "contents/.github/workflows": {
+        code: 1,
+        stdout: "",
+        stderr: "gh: Bad credentials (HTTP 401)",
+      },
+    });
+    const lines: string[] = [];
+
+    const { workflows } = await ghRunner(
+      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
+      { ...base(runner), logger: warnings(lines) },
+    );
+
+    expect(workflows?.matches.map((t) => t.job)).toEqual(["build"]);
+    expect(lines.join("")).toMatch(/warning: couldn't read .*workflows from GitHub/);
+    expect(lines.join("")).toContain("may not match main");
+    await rm(repoRoot, { recursive: true, force: true });
+  });
+
+  it("warns loudly when nothing will ever send the runner a job", async () => {
+    const { runner } = stubRunner(onGitHub(HOSTED));
+    const lines: string[] = [];
+
+    await ghRunner(
+      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
+      { ...base(runner), logger: warnings(lines) },
+    );
+
+    const output = lines.join("");
+    expect(output).not.toContain("watching for GitHub-hosted runners");
+    expect(output).toMatch(
+      /warning: no job on main can run on this runner, and none reads GH_RUNNER_LINUX/,
+    );
+  });
+
+  it("says the watcher is off when jobs target the runner directly", async () => {
+    const body = ["jobs:", "  local:", "    runs-on: [self-hosted, gh-runner]"].join("\n");
+    const { runner } = stubRunner(onGitHub(body));
+    const lines: string[] = [];
+
+    await ghRunner(
+      { repo: "octocat/private-thing", runnerVersion: VERSION, cacheDir },
+      { ...base(runner), logger: warnings(lines) },
+    );
+
+    const output = lines.join("");
+    expect(output).toContain("not watching for GitHub-hosted runners being refused");
+    expect(output).not.toContain("warning: no job");
   });
 
   it("skips the audit entirely with --no-workflow-check", async () => {

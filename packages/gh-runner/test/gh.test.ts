@@ -217,3 +217,51 @@ describe("GhClient variables", () => {
     expect(calls[0]?.args).toEqual(["api", "-X", "DELETE", "repos/a/b/actions/variables/V"]);
   });
 });
+
+describe("GhClient workflow reads", () => {
+  it("lists the workflow files on a branch", async () => {
+    const { runner, calls } = fakeRunner({
+      "contents/.github/workflows?ref=release%2F1": okResult("ci.yml\ndeploy.yaml\n"),
+    });
+    const names = await new GhClient({ runner }).workflowFileNames("o/r", "release/1");
+    expect(names).toEqual(["ci.yml", "deploy.yaml"]);
+    expect(calls[0]?.args).toContain('.[] | select(.type == "file") | .name');
+  });
+
+  it("tells a branch with no workflows from one it couldn't read", async () => {
+    const missing = fakeRunner({
+      contents: { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" },
+    });
+    await expect(new GhClient({ runner: missing.runner }).workflowFileNames("o/r")).resolves.toBe(
+      null,
+    );
+
+    const offline = fakeRunner({ contents: { code: 1, stdout: "", stderr: "dial tcp: timeout" } });
+    await expect(new GhClient({ runner: offline.runner }).workflowFileNames("o/r")).rejects.toThrow(
+      /timeout/,
+    );
+  });
+
+  it("reads a file raw and untrimmed", async () => {
+    const { runner, calls } = fakeRunner({
+      "contents/.github/workflows/ci.yml": okResult("\njobs: {}\n"),
+    });
+    expect(await new GhClient({ runner }).workflowFile("o/r", "ci.yml", "main")).toBe(
+      "\njobs: {}\n",
+    );
+    expect(calls[0]?.args).toContain("Accept: application/vnd.github.raw+json");
+  });
+
+  it("finds an open PR by branch prefix, and nothing when there's none", async () => {
+    const open = fakeRunner({ "pr list": okResult("gh-runner/fix-1\thttps://x/pull/3\n") });
+    expect(
+      await new GhClient({ runner: open.runner }).openPullRequestWithPrefix("o/r", "gh-runner/"),
+    ).toEqual({ branch: "gh-runner/fix-1", url: "https://x/pull/3" });
+    expect(open.calls[0]?.args).toContain("open");
+
+    const none = fakeRunner({ "pr list": okResult("") });
+    expect(
+      await new GhClient({ runner: none.runner }).openPullRequestWithPrefix("o/r", "gh-runner/"),
+    ).toBeNull();
+  });
+});

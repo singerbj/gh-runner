@@ -229,6 +229,40 @@ export class GhClient {
     throw new CliError(`couldn't determine the default branch of ${repo}`);
   }
 
+  /**
+   * Names of the files in `.github/workflows` on `ref`, or null when that
+   * branch has no such directory. `ref` left out means the default branch.
+   *
+   * Throws on anything else — no network, no access — so a caller can tell
+   * "there are no workflows" from "couldn't look".
+   */
+  async workflowFileNames(repo: string, ref?: string): Promise<string[] | null> {
+    try {
+      const names = await this.api(contentsPath(repo, ".github/workflows", ref), {
+        jq: '.[] | select(.type == "file") | .name',
+      });
+      return names.split("\n").filter(Boolean);
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw error;
+    }
+  }
+
+  /** One workflow file's text on `ref`, byte for byte. */
+  async workflowFile(repo: string, name: string, ref?: string): Promise<string> {
+    const args = [
+      "api",
+      "-H",
+      "Accept: application/vnd.github.raw+json",
+      contentsPath(repo, `.github/workflows/${name}`, ref),
+    ];
+    // Not execCapture: it trims, and a leading blank line would shift every
+    // line number the audit reports.
+    const result = await this.runner(this.bin, args, this.execOptions);
+    if (result.code !== 0) throw new CommandFailedError(this.bin, args, result);
+    return result.stdout;
+  }
+
   /** URL of the pull request whose head is `branch`, if one is open. */
   async pullRequestForBranch(repo: string, branch: string): Promise<string | null> {
     try {
@@ -252,6 +286,42 @@ export class GhClient {
         this.execOptions,
       );
       return url || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The open pull request whose head branch starts with `prefix`, or null.
+   * A merged or closed one doesn't count: its branch may linger on the remote
+   * long after it stopped meaning anything.
+   */
+  async openPullRequestWithPrefix(
+    repo: string,
+    prefix: string,
+  ): Promise<{ branch: string; url: string } | null> {
+    try {
+      const line = await execCapture(
+        this.runner,
+        this.bin,
+        [
+          "pr",
+          "list",
+          "--repo",
+          repo,
+          "--state",
+          "open",
+          "--limit",
+          "100",
+          "--json",
+          "headRefName,url",
+          "--jq",
+          `[.[] | select(.headRefName | startswith(${JSON.stringify(prefix)}))][0] | select(.) | "\\(.headRefName)\\t\\(.url)"`,
+        ],
+        this.execOptions,
+      );
+      const [branch, url] = line.split("\n")[0]?.split("\t") ?? [];
+      return branch && url ? { branch, url } : null;
     } catch {
       return null;
     }
@@ -380,4 +450,15 @@ export class GhClient {
       return null;
     }
   }
+}
+
+/** `repos/OWNER/NAME/contents/PATH`, pinned to `ref` when there is one. */
+function contentsPath(repo: string, path: string, ref: string | undefined): string {
+  const encoded = path.split("/").map(encodeURIComponent).join("/");
+  return `repos/${repo}/contents/${encoded}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`;
+}
+
+/** gh exits 1 for every HTTP error; only its message says which. */
+function isNotFound(error: unknown): boolean {
+  return error instanceof CommandFailedError && /\bHTTP 404\b/.test(error.result.stderr);
 }

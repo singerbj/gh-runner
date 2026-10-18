@@ -38,7 +38,7 @@ import type { Confirm } from "./prompt.js";
 import { HostedUsageWatcher } from "./usage.js";
 import { availableTargets, parseTargetNames, planOptions, resolveTargets } from "./targets.js";
 import type { PlatformOption, ResolvedTarget } from "./targets.js";
-import { PROBE_JOB_ID, inspectWorkflows } from "./workflows.js";
+import { PROBE_JOB_ID, githubWorkflows, inspectWorkflows } from "./workflows.js";
 import type { WorkflowReport } from "./workflows.js";
 
 export interface RunContext {
@@ -279,17 +279,27 @@ export async function ghRunner(
   const repoRoot = await gh.repoRoot(options.cwd ?? process.cwd());
 
   let workflows: WorkflowReport | undefined;
-  if (!options.skipWorkflowCheck && repoRoot) {
-    logger.say("Checking .github/workflows for a matching runs-on...");
-    workflows = await inspectWorkflows(
+  let workflowBranch: string | undefined;
+  if (!options.skipWorkflowCheck) {
+    const audit = await auditWorkflows(
+      gh,
+      repo,
       repoRoot,
       plans.map((plan) => plan.allLabels),
+      logger,
     );
-    reportWorkflows(logger, workflows);
+    workflows = audit?.report;
+    workflowBranch = audit?.branch;
+    if (workflows) reportWorkflows(logger, workflows, workflowBranch);
     throwIfAborted();
   }
 
-  const fixing = await shouldFixWorkflows(options, workflows, confirm);
+  // The audit no longer needs a checkout, but the fix still builds in one: an
+  // offer we couldn't act on is worse than none.
+  const fixing =
+    repoRoot || options.fixWorkflows === "always"
+      ? await shouldFixWorkflows(options, workflows, confirm)
+      : false;
   if (!fixing && workflowsNeedFix(workflows)) {
     logger.raw(
       `    ${dim(`add runs-on: [self-hosted, ${DEFAULT_LABEL}] to a job, or re-run with --fix-workflows`)}\n`,
@@ -384,6 +394,8 @@ export async function ghRunner(
       `    ${dim(`watching for GitHub-hosted runners being refused — will set ${usage.variableNames.join(", ")} if they are`)}\n`,
     );
     await usage.start();
+  } else if (workflows) {
+    reportNotWatching(logger, plans, workflows, workflowBranch);
   }
 
   // Every runner gets to finish and clean up even if a sibling blows up.
@@ -723,6 +735,77 @@ function switchableLabels(
   return served.filter((label) => read.has(runnerVariable(label)));
 }
 
+/**
+ * Scans the workflows GitHub will actually run: the default branch, read
+ * through the API. The checkout is only a fallback — it can be stale, on
+ * another branch, or a different clone entirely, and a scan of it can say a
+ * job reads a runner variable when the default branch doesn't, or the reverse.
+ */
+async function auditWorkflows(
+  gh: GhClient,
+  repo: string,
+  repoRoot: string | null,
+  labelSets: ReadonlyArray<readonly string[]>,
+  logger: Logger,
+): Promise<{ report: WorkflowReport; branch: string | undefined } | undefined> {
+  // Without a name the contents API still reads the default branch; the name
+  // is only for saying which one.
+  const branch = await gh.defaultBranch(repo).catch(() => undefined);
+  const where = branch ?? "the default branch";
+
+  logger.say(`Checking .github/workflows on ${where} for a matching runs-on...`);
+  try {
+    return { report: await inspectWorkflows(githubWorkflows(gh, repo, branch), labelSets), branch };
+  } catch (error) {
+    const detail = error instanceof Error ? ` (${error.message.split("\n")[0]})` : "";
+    if (!repoRoot) {
+      logger.warn(
+        `couldn't read ${repo}'s workflows from GitHub, so they weren't checked${detail}`,
+      );
+      return undefined;
+    }
+    logger.warn(
+      `couldn't read ${repo}'s workflows from GitHub${detail}\n` +
+        `         checking this checkout instead, which may not match ${where}`,
+    );
+    return { report: await inspectWorkflows(repoRoot, labelSets), branch: undefined };
+  }
+}
+
+/**
+ * Says the refusal watcher is off, which used to be told only by a line not
+ * being there. Loud when nothing at all will send these runners a job.
+ */
+function reportNotWatching(
+  logger: Logger,
+  plans: readonly TargetPlan[],
+  report: WorkflowReport,
+  branch: string | undefined,
+): void {
+  const { dim } = logger.styles;
+  const where = branch ?? "the default branch";
+  const variables = [...new Set(plans.map((plan) => runnerVariable(osLabel(plan.target.os))))];
+  const names = variables.join(" or ");
+
+  if (report.matches.length > 0) {
+    logger.raw(
+      `    ${dim(`not watching for GitHub-hosted runners being refused — no workflow on ${where} reads ${names}`)}\n`,
+    );
+    return;
+  }
+
+  const runners = plans.length === 1 ? "this runner" : "these runners";
+  const unknown = report.unknown.length;
+  logger.warn(
+    `no job on ${where} can run on ${runners}, and none reads ${names}, so nothing\n` +
+      `         will be moved here when GitHub-hosted runners are refused. ${plans.length === 1 ? "It" : "They"} will sit idle` +
+      (unknown > 0
+        ? `\n         unless one of the ${unknown} job${unknown === 1 ? "" : "s"} whose runs-on can't be read statically picks ${plans.length === 1 ? "it" : "them"}.`
+        : ".") +
+      `\n         Merge the pull request \`gh-runner setup\` opens into ${where}, or re-run with --fix-workflows.`,
+  );
+}
+
 async function shouldFixWorkflows(
   options: RunnerOptions,
   report: WorkflowReport | undefined,
@@ -751,12 +834,12 @@ async function shouldFixWorkflows(
   );
 }
 
-function reportWorkflows(logger: Logger, report: WorkflowReport): void {
+function reportWorkflows(logger: Logger, report: WorkflowReport, branch?: string): void {
   const { dim, green, bold } = logger.styles;
   const line = (text: string) => logger.raw(`    ${text}\n`);
 
   if (!report.scanned) {
-    line(dim("no .github/workflows directory — nothing to check"));
+    line(dim(`no .github/workflows directory${branch ? ` on ${branch}` : ""} — nothing to check`));
     return;
   }
 

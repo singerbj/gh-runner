@@ -52,6 +52,8 @@ const ok = (stdout = ""): ExecResult => ({ code: 0, stdout, stderr: "" });
 let root = "";
 let checkout = "";
 let ghCalls: Array<readonly string[]> = [];
+/** What `gh pr list` answers: an open fix PR as `branch<TAB>url`, or nothing. */
+let openPr = "";
 
 /** Real git, stubbed gh. */
 const runner: CommandRunner = (command, args, options) => {
@@ -59,7 +61,7 @@ const runner: CommandRunner = (command, args, options) => {
     ghCalls.push(args);
     const line = args.join(" ");
     if (line.includes("defaultBranchRef")) return Promise.resolve(ok("main\n"));
-    if (line.includes("pr list")) return Promise.resolve(ok(""));
+    if (line.includes("pr list")) return Promise.resolve(ok(openPr));
     if (line.includes("pr create")) {
       return Promise.resolve(ok("https://github.com/octocat/thing/pull/7\n"));
     }
@@ -73,6 +75,7 @@ const git = (cwd: string, ...args: string[]) =>
 
 beforeEach(async () => {
   ghCalls = [];
+  openPr = "";
   root = await mkdtemp(join(tmpdir(), "gh-runner-test-"));
 
   // A bare repo standing in for origin, plus a checkout with one workflow.
@@ -322,13 +325,38 @@ describe("proposeWorkflowFix", () => {
     expect(git(checkout, "branch", "--list", "gh-runner/target-self-hosted*")).toBe("");
   });
 
-  it("refuses to stack a second PR on an existing branch", async () => {
+  it("refuses to stack a second PR on an open one", async () => {
     const first = await propose();
+    if (first.status !== "opened") throw new Error(`expected a PR, got ${first.status}`);
+    openPr = `${first.branch}\t${first.url}`;
+
     const second = await propose();
     expect(second.status).toBe("branch-exists");
-    if (second.status !== "branch-exists" || first.status !== "opened") return;
+    if (second.status !== "branch-exists") return;
     // Reported as the branch that is actually on the remote, not ours.
     expect(second.branch).toBe(first.branch);
+    expect(second.url).toBe(first.url);
+  });
+
+  it("isn't stopped by the branch of a PR that's no longer open", async () => {
+    const first = await propose();
+    if (first.status !== "opened") throw new Error(`expected a PR, got ${first.status}`);
+    // Closed unmerged: its branch is still on the remote, and main still needs it.
+    const second = await propose();
+    expect(second.status).toBe("opened");
+  });
+
+  it("has nothing to do once the fix is merged, even with its branch left behind", async () => {
+    const first = await propose();
+    if (first.status !== "opened") throw new Error(`expected a PR, got ${first.status}`);
+    git(checkout, "fetch", "--quiet", "origin", first.branch);
+    git(checkout, "merge", "--quiet", "--ff-only", `origin/${first.branch}`);
+    git(checkout, "push", "--quiet", "origin", "main");
+    // The checkout is then moved back, as a stale clone would be.
+    git(checkout, "reset", "--quiet", "--hard", "HEAD~1");
+
+    expect((await propose()).status).toBe("no-changes");
+    expect(git(checkout, "ls-remote", "--heads", "origin")).toContain(first.branch);
   });
 
   it("works when an earlier run left its branch and worktree behind", async () => {
@@ -362,10 +390,6 @@ describe("proposeWorkflowFix", () => {
   it("gives each run its own branch", async () => {
     const first = await propose();
     if (first.status !== "opened") throw new Error(`expected a PR, got ${first.status}`);
-
-    // A pushed branch would short-circuit the second run, so start clean.
-    git(checkout, "push", "--quiet", "origin", "--delete", first.branch);
-    git(checkout, "fetch", "--quiet", "--prune", "origin");
 
     const second = await propose();
     if (second.status !== "opened") throw new Error(`expected a PR, got ${second.status}`);

@@ -44,6 +44,8 @@ export { GhClient, parseDigestFromReleaseBody } from "./gh.js";
 export type { GhClientOptions, RepoVisibility } from "./gh.js";
 export {
   inspectWorkflows,
+  checkoutWorkflows,
+  githubWorkflows,
   listWorkflowFiles,
   parseRunsOn,
   classifyTarget,
@@ -67,6 +69,7 @@ export type {
   ProbeSpec,
   RunnerFallback,
   JobCaveat,
+  WorkflowSource,
 } from "./workflows.js";
 export {
   HostedUsageWatcher,

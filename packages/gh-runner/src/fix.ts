@@ -73,6 +73,7 @@ export interface FixedJob {
 
 export type WorkflowFixResult =
   | { status: "no-changes" }
+  /** A fix PR is still open, or the branch we were told to use is taken. */
   | { status: "branch-exists"; branch: string; url: string | null }
   | {
       status: "opened" | "dry-run";
@@ -126,14 +127,12 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
     throw new CliError(`couldn't fetch origin/${base} — is this checkout connected to ${repo}?`);
   }
 
-  // A previous run already pushed a fix branch. Its name won't match ours, so
-  // match on the prefix instead — the point is not to stack a second PR.
-  const pushed = await pushedFixBranch(commandRunner, exec, options.branch);
-  if (pushed) {
+  // A branch we were handed by name can only be pushed once.
+  if (options.branch && (await remoteBranchExists(commandRunner, exec, options.branch))) {
     return {
       status: "branch-exists",
-      branch: pushed,
-      url: await gh.pullRequestForBranch(repo, pushed),
+      branch: options.branch,
+      url: await gh.pullRequestForBranch(repo, options.branch),
     };
   }
 
@@ -164,6 +163,14 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
     // need this PR, to take its probe job back out.
     if (wanted.length === 0 && !report.legacyProbe) {
       return { status: "no-changes" };
+    }
+
+    // The default branch still needs the fix, so an earlier run's PR is the
+    // thing to merge rather than a second one. Only an open one: the branch of
+    // a merged PR can outlive it, and says nothing about what's left to do.
+    if (!options.branch) {
+      const open = await gh.openPullRequestWithPrefix(repo, FIX_BRANCH_PREFIX);
+      if (open) return { status: "branch-exists", branch: open.branch, url: open.url };
     }
 
     const byFile = new Map<string, RunsOnTarget[]>();
@@ -244,29 +251,18 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
   }
 }
 
-/**
- * A fix branch already on the remote, or null. With no explicit branch this
- * matches every suffix the generator can produce, plus the unsuffixed name
- * older versions pushed.
- */
-async function pushedFixBranch(
+/** Whether `branch` is already on the remote. */
+async function remoteBranchExists(
   commandRunner: CommandRunner,
   exec: ExecOptions,
-  branch: string | undefined,
-): Promise<string | null> {
-  const pattern = branch ? `refs/heads/${branch}` : `refs/heads/${FIX_BRANCH_PREFIX}*`;
+  branch: string,
+): Promise<boolean> {
   const result = await commandRunner(
     "git",
-    ["ls-remote", "--heads", "origin", pattern],
+    ["ls-remote", "--heads", "origin", `refs/heads/${branch}`],
     exec,
   ).catch(() => null);
-  if (!result || result.code !== 0) return null;
-
-  for (const line of result.stdout.split("\n")) {
-    const ref = line.split("\t")[1]?.trim();
-    if (ref?.startsWith("refs/heads/")) return ref.slice("refs/heads/".length);
-  }
-  return null;
+  return Boolean(result && result.code === 0 && result.stdout.trim());
 }
 
 /** Falls back to a bot identity only when the user has no git identity configured. */

@@ -91,6 +91,12 @@ jobs:
           docker run --rm --entrypoint gh gh-runner-smoke --version
           test "$(docker run --rm --entrypoint id gh-runner-smoke -u)" != 0
 
+          # What a job gets on either Linux fallback: Node, and sudo for apt-get.
+          docker run --rm --entrypoint bash gh-runner-smoke -c \
+            'node --version && npm --version && npx --version && sudo -n apt-get --version >/dev/null'
+          # `gh-runner linux` in Docker runs config.sh from the working directory.
+          docker run --rm --entrypoint bash gh-runner-smoke -c 'test -x ./config.sh && test -x ./run.sh'
+
           # Without its two variables it says which, rather than failing inside gh.
           if output=$(docker run --rm gh-runner-smoke 2>&1); then
             echo "::error::the image started without GH_TOKEN and GH_RUNNER_REPO."

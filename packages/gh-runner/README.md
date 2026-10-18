@@ -86,7 +86,7 @@ Several platforms means several runners, registered and running in parallel, eac
 
 ```
 [macOS] ==> Runner is live. Waiting for a job...
-[Linux] ==> Starting ghcr.io/actions/actions-runner:latest...
+[Linux] ==> Starting ghcr.io/singerbj/gh-runner:latest...
 ```
 
 Every runner registers under the same set of labels, so `runs-on` is a stable contract in your YAML no matter whose machine is standing in:
@@ -115,7 +115,9 @@ GitHub adds `self-hosted`, `macOS`/`Linux`/`Windows`, and `X64`/`ARM64` on top o
 
 ### Where Linux comes from
 
-Asking for `linux` on a Mac or a Windows box runs the runner in a Docker container. It registers exactly the same labels a native Linux machine would (`gh-runner`, `gh-runner-linux`, `Linux`, `X64`/`ARM64`), so from GitHub's side it _is_ a Linux runner. Nothing is downloaded or unpacked on the host — GitHub's runner image already contains the runner.
+Asking for `linux` on a Mac or a Windows box runs the runner in a Docker container. It registers exactly the same labels a native Linux machine would (`gh-runner`, `gh-runner-linux`, `Linux`, `X64`/`ARM64`), so from GitHub's side it _is_ a Linux runner. Nothing is downloaded or unpacked on the host — the image already contains the runner.
+
+The image is the one the [Docker deployment](#keeping-a-runner-online-with-docker) runs: GitHub's own runner image (`ghcr.io/actions/actions-runner`, Ubuntu) plus Node LTS and `gh`. So a Linux job finds the same machine wherever it falls back to a container: `git`, `curl`, `jq`, Node, npm and `gh`, run as a user with passwordless `sudo` (so `apt-get` and `npx playwright install --with-deps` work), and no Docker daemon.
 
 ```bash
 gh-runner linux                                  # a container on a Mac, native on Linux
@@ -269,27 +271,27 @@ Only GitHub-hosted jobs get repointed. A job already asking for `self-hosted` wi
 
 ### Options
 
-| Option                   | Description                                                       |
-| ------------------------ | ----------------------------------------------------------------- |
-| `--once`, `--ephemeral`  | Take one job, then deregister (default: stay online)              |
-| `--labels a,b,c`         | Extra labels on top of the `gh-runner` set and the host label     |
-| `--repo OWNER/NAME`      | Target a specific repo instead of detecting from cwd              |
-| `--name NAME`            | Runner name to register (default: `<host>-<pid>`)                 |
-| `--allow-public`         | Register even if the repo isn't confirmed private (**dangerous**) |
-| `--all`                  | Serve every platform this machine can                             |
-| `--os a,b`, `--platform` | Platforms to serve (same as positional arguments)                 |
-| `--docker-image IMAGE`   | Image for containerised runners (default GitHub's runner image)   |
-| `--docker-platform P`    | Container platform, e.g. `linux/amd64`                            |
-| `--runner-version X.Y.Z` | Pin the runner version (default: latest release)                  |
-| `--cache-dir PATH`       | Where to cache runner tarballs                                    |
-| `--no-workflow-check`    | Skip the `runs-on` audit of `.github/workflows`                   |
-| `--fix-workflows`        | Open the workflow PR without asking first                         |
-| `--no-fix-workflows`     | Never offer to open it                                            |
-| `--fix-jobs a,b`         | Limit the fix to these job ids                                    |
-| `--fix-label LABEL`      | Force one label on every job the fix PR rewrites                  |
-| `--dry-run`              | `setup` only: list the changes, push nothing                      |
-| `-h, --help`             | Show help                                                         |
-| `-v, --version`          | Show version                                                      |
+| Option                   | Description                                                            |
+| ------------------------ | ---------------------------------------------------------------------- |
+| `--once`, `--ephemeral`  | Take one job, then deregister (default: stay online)                   |
+| `--labels a,b,c`         | Extra labels on top of the `gh-runner` set and the host label          |
+| `--repo OWNER/NAME`      | Target a specific repo instead of detecting from cwd                   |
+| `--name NAME`            | Runner name to register (default: `<host>-<pid>`)                      |
+| `--allow-public`         | Register even if the repo isn't confirmed private (**dangerous**)      |
+| `--all`                  | Serve every platform this machine can                                  |
+| `--os a,b`, `--platform` | Platforms to serve (same as positional arguments)                      |
+| `--docker-image IMAGE`   | Image for containerised runners (default `ghcr.io/singerbj/gh-runner`) |
+| `--docker-platform P`    | Container platform, e.g. `linux/amd64`                                 |
+| `--runner-version X.Y.Z` | Pin the runner version (default: latest release)                       |
+| `--cache-dir PATH`       | Where to cache runner tarballs                                         |
+| `--no-workflow-check`    | Skip the `runs-on` audit of `.github/workflows`                        |
+| `--fix-workflows`        | Open the workflow PR without asking first                              |
+| `--no-fix-workflows`     | Never offer to open it                                                 |
+| `--fix-jobs a,b`         | Limit the fix to these job ids                                         |
+| `--fix-label LABEL`      | Force one label on every job the fix PR rewrites                       |
+| `--dry-run`              | `setup` only: list the changes, push nothing                           |
+| `-h, --help`             | Show help                                                              |
+| `-v, --version`          | Show version                                                           |
 
 ## Keeping a runner online with Docker
 
@@ -300,7 +302,7 @@ The whole setup is two variables:
 ```bash
 docker run -d --name gh-runner --restart unless-stopped --stop-timeout 60 \
   -e GH_TOKEN=github_pat_… -e GH_RUNNER_REPO=you/your-repo \
-  -v gh-runner:/home/node \
+  -v gh-runner-cache:/home/runner/.cache \
   ghcr.io/singerbj/gh-runner
 ```
 
@@ -324,9 +326,10 @@ On **Coolify**: add a **Docker Compose Empty** resource, paste [`deploy/docker-c
 
 Anything passed as the container's command is added to `gh-runner`'s arguments, e.g. `command: ["--runner-version", "2.334.0"]`.
 
-The image is `node:lts` plus `gh`, `tini` and `gh-runner`, running `gh-runner linux --repo … --no-fix-workflows` as the unprivileged `node` user. Its [`Dockerfile`](deploy/Dockerfile) and [`entrypoint.sh`](deploy/entrypoint.sh) are next to the compose file. Things to know:
+The image is GitHub's runner image (`ghcr.io/actions/actions-runner`) plus Node LTS, `gh`, `tini` and `gh-runner`, running `gh-runner linux --repo … --no-fix-workflows` as GitHub's unprivileged `runner` user. `gh-runner linux` runs the same image when it uses Docker, so a job that works on one works on the other. Its [`Dockerfile`](deploy/Dockerfile) and [`entrypoint.sh`](deploy/entrypoint.sh) are next to the compose file. Things to know:
 
 - **Linux only.** It's a Linux container, so it serves `gh-runner-linux` (and `gh-runner`).
+- **What a job gets.** Ubuntu with `git`, `curl`, `jq`, Node LTS, npm and `gh`, as a user with passwordless `sudo`, so `apt-get install` and `npx playwright install --with-deps` work. `sudo` is root inside the container only: there's no Docker socket and nothing from the host. Anything else a job needs, it installs, the way `actions/setup-node` and friends already do.
 - **No Docker socket, no host mounts.** Jobs can't reach anything else on the server, but `docker build`, `services:` and `container:` jobs won't run there either.
 - **Jobs don't get `GH_TOKEN`, but a determined one can find it.** It's removed from the environment jobs inherit, so it isn't in a step's `env`, its logs, or a `gh` it runs. Jobs do run as the same user as `gh-runner`, though, which can read the token from `/proc`. Scope it to the one repo, and only use this on a repo where you trust everyone who can push.
 - **The workflows need the fallback `runs-on` first.** Run `npx @singerbj/gh-runner setup` in the repo once.

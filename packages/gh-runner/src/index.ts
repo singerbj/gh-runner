@@ -48,6 +48,8 @@ export {
   parseRunsOn,
   classifyTarget,
   hostedRunnerOs,
+  hostedRunnerArch,
+  jobCaveats,
   applyWorkflowFix,
   readProbeExpression,
   readFallback,
@@ -64,6 +66,7 @@ export type {
   WorkflowFixPlan,
   ProbeSpec,
   RunnerFallback,
+  JobCaveat,
 } from "./workflows.js";
 export {
   HostedUsageWatcher,
@@ -73,7 +76,7 @@ export {
   startOfUtcMonth,
 } from "./usage.js";
 export type { HostedStatus, HostedUsageWatcherOptions, UsageCheckResult } from "./usage.js";
-export { proposeWorkflowFix, fixLabelFor, fixLabels } from "./fix.js";
+export { proposeWorkflowFix, fixLabelFor, fixLabels, describeCaveat } from "./fix.js";
 export type { WorkflowFixOptions, WorkflowFixResult, FixedJob } from "./fix.js";
 export { createConfirm, declineAll } from "./prompt.js";
 export type { Confirm, ConfirmOptions } from "./prompt.js";

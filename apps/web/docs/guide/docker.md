@@ -7,7 +7,7 @@ For a server that should always take jobs (a home lab, a VPS, a Coolify host), u
 ```sh
 docker run -d --restart unless-stopped --stop-timeout 60 \
   -e GH_TOKEN=github_pat_… -e GH_RUNNER_REPO=you/your-repo \
-  -v gh-runner:/home/node ghcr.io/singerbj/gh-runner
+  -v gh-runner-cache:/home/runner/.cache ghcr.io/singerbj/gh-runner
 ```
 
 ## Docker Compose
@@ -56,6 +56,7 @@ Arguments passed as the container's command go to `gh-runner`, e.g. `command: ["
 ## Limits
 
 - **Linux only.** It serves `gh-runner-linux` and `gh-runner`.
+- **GitHub's runner image, plus Node LTS and `gh`.** Jobs run on Ubuntu as a user with passwordless `sudo`, so `apt-get` and `npx playwright install --with-deps` work. It's the same image `gh-runner linux` runs in Docker.
 - **No Docker socket.** `docker build`, `services:` and `container:` jobs won't run.
 - **Run [setup](./setup) first** so your workflows can fall back to it.
 

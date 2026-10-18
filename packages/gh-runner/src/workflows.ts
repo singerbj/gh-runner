@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { LineCounter, isMap, isScalar, isSeq, parseDocument } from "yaml";
 import type { Pair } from "yaml";
 import { fallbackRunsOn, labelForVariable } from "./constants.js";
-import type { RunnerOs } from "./platform.js";
+import type { RunnerArch, RunnerOs } from "./platform.js";
 
 export interface RunsOnTarget {
   /** Workflow file, relative to the repo root. */
@@ -32,7 +32,26 @@ export interface RunsOnTarget {
    * runner can take.
    */
   fallback?: RunnerFallback;
+  /** What a gh-runner machine may not give this job, read off the job itself. */
+  caveats?: JobCaveat[];
 }
+
+/**
+ * Something a job relies on that a GitHub-hosted runner has and a gh-runner
+ * machine may not. Found by reading the job, so it's the common, visible
+ * patterns rather than every tool a step happens to call.
+ */
+export type JobCaveat =
+  /** A job `container:`, which the runner starts with Docker. */
+  | { kind: "container" }
+  /** `services:` containers, which the runner starts with Docker. */
+  | { kind: "services"; names: string[] }
+  /** A step that runs Docker itself: `docker …` in a script, or a Docker action. */
+  | { kind: "docker"; step: string }
+  /** A hosted runner name that pins a CPU, which the fallback label doesn't. */
+  | { kind: "arch"; runner: string; arch: RunnerArch }
+  /** Node tooling called without `actions/setup-node` installing a version first. */
+  | { kind: "node"; commands: string[] };
 
 /** Both sides of a `${{ vars.GH_RUNNER_LINUX || 'ubuntu-latest' }}`. */
 export interface RunnerFallback {
@@ -269,6 +288,87 @@ export function hostedRunnerOs(labels: readonly string[]): RunnerOs | null {
   return found;
 }
 
+/**
+ * The CPU a GitHub-hosted runner name pins, or null when it leaves that to the
+ * image's default. `ubuntu-24.04-arm` and `macos-14-xlarge` are arm64;
+ * `macos-13` and `macos-15-large` are Intel.
+ */
+export function hostedRunnerArch(label: string): RunnerArch | null {
+  const name = label.trim().toLowerCase();
+  if (imageOs(name) === null) return null;
+  if (/-arm(64)?$/.test(name) || /^macos-.*-xlarge$/.test(name)) return "arm64";
+  if (/^macos-(1[0-3](\.\d+)?|.*-(large|intel))$/.test(name)) return "x64";
+  return null;
+}
+
+/** A command at the start of a shell word: `docker build`, `cd app && npm ci`, `$(npx tsc)`. */
+const commandPattern = (names: readonly string[], flags: string): RegExp =>
+  new RegExp(`(?:^|[\\s;&|(\`])(${names.join("|")})(?=\\s|$|[;&|)])`, flags);
+
+const DOCKER_COMMAND = commandPattern(["docker", "docker-compose", "podman", "buildah"], "m");
+const NODE_COMMANDS = commandPattern(["node", "npm", "npx", "yarn", "pnpm", "corepack"], "gm");
+
+/** The `uses:` of an action that only works with a Docker daemon to talk to. */
+const usesDocker = (uses: string): boolean =>
+  uses.startsWith("docker://") || uses.toLowerCase().startsWith("docker/");
+
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+/**
+ * What a job leans on that a gh-runner machine may not have: Docker for
+ * `container:`, `services:` and `docker` steps, the CPU its runner name pins,
+ * and Node it never installs. `hosted` is the runner it uses today.
+ *
+ * This reads the job, not the machine, so it only knows the obvious patterns —
+ * which are also the ones that break most often.
+ */
+export function jobCaveats(job: unknown, hosted: readonly string[]): JobCaveat[] {
+  const record = asRecord(job);
+  if (!record) return [];
+  const caveats: JobCaveat[] = [];
+
+  if (record["container"]) caveats.push({ kind: "container" });
+
+  const services = asRecord(record["services"]);
+  if (services && Object.keys(services).length > 0) {
+    caveats.push({ kind: "services", names: Object.keys(services) });
+  }
+
+  const steps = Array.isArray(record["steps"]) ? record["steps"].map(asRecord) : [];
+  let setupNode = false;
+  const nodeCommands = new Set<string>();
+  for (const [index, step] of steps.entries()) {
+    if (!step) continue;
+    const uses = typeof step["uses"] === "string" ? step["uses"] : "";
+    const run = typeof step["run"] === "string" ? step["run"] : "";
+    if (uses.toLowerCase().startsWith("actions/setup-node")) setupNode = true;
+
+    const dockerStep = usesDocker(uses) || DOCKER_COMMAND.test(run);
+    if (dockerStep && !caveats.some((caveat) => caveat.kind === "docker")) {
+      const name = typeof step["name"] === "string" ? step["name"] : "";
+      caveats.push({ kind: "docker", step: name || uses || `step ${index + 1}` });
+    }
+
+    for (const match of run.matchAll(NODE_COMMANDS)) {
+      if (match[1]) nodeCommands.add(match[1]);
+    }
+  }
+
+  for (const runner of hosted) {
+    const arch = hostedRunnerArch(runner);
+    if (arch) caveats.push({ kind: "arch", runner, arch });
+  }
+
+  if (!setupNode && nodeCommands.size > 0) {
+    caveats.push({ kind: "node", commands: [...nodeCommands] });
+  }
+
+  return caveats;
+}
+
 interface ResolvedLabels {
   labels: string[];
   unresolved: string | undefined;
@@ -385,6 +485,8 @@ export function parseWorkflow(source: string, file: string): WorkflowParseResult
         : undefined;
 
     const { labels, unresolved, fallback } = resolveRunsOn(readRunsOnLabels(runsOnValue), probes);
+    const caveats =
+      unresolved === undefined ? jobCaveats(jobValue, fallback?.hosted ?? labels) : [];
 
     targets.push({
       file,
@@ -396,6 +498,7 @@ export function parseWorkflow(source: string, file: string): WorkflowParseResult
       range: [start, end],
       probe: probeJobs.has(job),
       ...(fallback ? { fallback } : {}),
+      ...(caveats.length > 0 ? { caveats } : {}),
     });
   }
 

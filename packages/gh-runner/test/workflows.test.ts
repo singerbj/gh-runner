@@ -4,8 +4,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   classifyTarget,
+  hostedRunnerArch,
   hostedRunnerOs,
   inspectWorkflows,
+  jobCaveats,
   parseRunsOn,
   parseWorkflow,
   readRunsOnLabels,
@@ -340,5 +342,97 @@ describe("inspectWorkflows", () => {
     const report = await inspectWorkflows(root, [RUNNER_LABELS]);
     expect(report.workflowCount).toBe(2);
     expect(report.matches.map((t) => t.job)).toEqual(["two"]);
+  });
+});
+
+describe("hostedRunnerArch", () => {
+  it.each([
+    ["ubuntu-24.04-arm", "arm64"],
+    ["ubuntu-22.04-arm", "arm64"],
+    ["windows-11-arm", "arm64"],
+    ["macos-14-xlarge", "arm64"],
+    ["macos-13", "x64"],
+    ["macos-15-large", "x64"],
+    ["macos-15-intel", "x64"],
+    ["ubuntu-latest", null],
+    ["macos-14", null],
+    ["windows-2022", null],
+    ["my-arm", null],
+  ])("reads %s as %s", (label, arch) => {
+    expect(hostedRunnerArch(label)).toBe(arch);
+  });
+});
+
+describe("jobCaveats", () => {
+  it("finds nothing in a plain job", () => {
+    expect(
+      jobCaveats({ steps: [{ uses: "actions/checkout@v4" }, { run: "make test" }] }, [
+        "ubuntu-latest",
+      ]),
+    ).toEqual([]);
+  });
+
+  it("flags what needs Docker: container:, services: and docker steps", () => {
+    expect(
+      jobCaveats(
+        {
+          container: "node:20",
+          services: { postgres: { image: "postgres" }, redis: { image: "redis" } },
+          steps: [{ name: "Build image", run: "docker build -t app ." }, { run: "docker push" }],
+        },
+        ["ubuntu-latest"],
+      ),
+    ).toEqual([
+      { kind: "container" },
+      { kind: "services", names: ["postgres", "redis"] },
+      { kind: "docker", step: "Build image" },
+    ]);
+  });
+
+  it("flags Docker actions, and docker anywhere a command starts", () => {
+    const step = (s: Record<string, string>) => jobCaveats({ steps: [s] }, []);
+    expect(step({ uses: "docker/build-push-action@v6" })).toEqual([
+      { kind: "docker", step: "docker/build-push-action@v6" },
+    ]);
+    expect(step({ uses: "docker://alpine:3" })).toEqual([
+      { kind: "docker", step: "docker://alpine:3" },
+    ]);
+    expect(step({ run: "cd app && docker compose up -d" })).toEqual([
+      { kind: "docker", step: "step 1" },
+    ]);
+    // Only a command, not a word that happens to contain it.
+    expect(step({ run: "./scripts/no-docker.sh --docker=false\necho dockerfile" })).toEqual([]);
+  });
+
+  it("flags a runner name that pins a CPU", () => {
+    expect(jobCaveats({}, ["ubuntu-24.04-arm"])).toEqual([
+      { kind: "arch", runner: "ubuntu-24.04-arm", arch: "arm64" },
+    ]);
+  });
+
+  it("flags Node tooling only when actions/setup-node doesn't install it", () => {
+    const steps = [{ run: "npm ci\nnpx tsc --noEmit" }, { run: "node scripts/build.js" }];
+    expect(jobCaveats({ steps }, [])).toEqual([{ kind: "node", commands: ["npm", "npx", "node"] }]);
+    expect(jobCaveats({ steps: [{ uses: "actions/setup-node@v4" }, ...steps] }, [])).toEqual([]);
+    // `node_modules` and `pnpm-lock.yaml` aren't commands.
+    expect(jobCaveats({ steps: [{ run: "rm -rf node_modules pnpm-lock.yaml" }] }, [])).toEqual([]);
+  });
+
+  it("is attached to each job parseWorkflow reads", () => {
+    const [target] = parseRunsOn(
+      [
+        "jobs:",
+        "  e2e:",
+        "    runs-on: ubuntu-24.04-arm",
+        "    services:",
+        "      db: { image: postgres }",
+        "",
+      ].join("\n"),
+      "ci.yml",
+    );
+    expect(target?.caveats).toEqual([
+      { kind: "services", names: ["db"] },
+      { kind: "arch", runner: "ubuntu-24.04-arm", arch: "arm64" },
+    ]);
   });
 });

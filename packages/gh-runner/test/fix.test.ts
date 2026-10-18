@@ -117,6 +117,7 @@ describe("proposeWorkflowFix", () => {
         job: "build",
         label: "gh-runner-linux",
         from: ["ubuntu-latest"],
+        caveats: [],
       },
     ]);
     expect(result.url).toBe("https://github.com/octocat/thing/pull/7");
@@ -190,6 +191,61 @@ describe("proposeWorkflowFix", () => {
     );
     // That nothing depends on a self-hosted runner belongs in the body.
     expect(body).toContain("No self-hosted runner is needed for this to work.");
+  });
+
+  it("lists the jobs a fallback machine may not run the same, in the result and the PR", async () => {
+    await commitWorkflow(
+      [
+        "jobs:",
+        "  e2e:",
+        "    runs-on: ubuntu-latest",
+        "    services:",
+        "      postgres:",
+        "        image: postgres:16",
+        "    steps:",
+        "      - run: npx playwright install --with-deps",
+        "  arm:",
+        "    runs-on: ubuntu-24.04-arm",
+        "  plain:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - uses: actions/setup-node@v4",
+        "      - run: npm test",
+        "",
+      ].join("\n"),
+    );
+    const result = await propose();
+    if (result.status !== "opened") throw new Error(result.status);
+
+    expect(Object.fromEntries(result.jobs.map((job) => [job.job, job.caveats]))).toEqual({
+      e2e: [
+        { kind: "services", names: ["postgres"] },
+        { kind: "node", commands: ["npx"] },
+      ],
+      arm: [{ kind: "arch", runner: "ubuntu-24.04-arm", arch: "arm64" }],
+      plain: [],
+    });
+
+    const create = ghCalls.find((args) => args.join(" ").includes("pr create"));
+    const body = create?.[create.indexOf("--body") + 1] ?? "";
+    expect(body).toContain("## Check these jobs");
+    expect(body).toContain(
+      "- `e2e` in `.github/workflows/ci.yml` starts `services:` (`postgres`), which need a Docker daemon",
+    );
+    expect(body).toContain(
+      "- `arm` in `.github/workflows/ci.yml` asks for `ubuntu-24.04-arm` (arm64), but falls back to any `gh-runner-linux` runner",
+    );
+    const section = body.slice(
+      body.indexOf("## Check these jobs"),
+      body.indexOf("## How it works"),
+    );
+    expect(section).not.toContain("`plain`");
+  });
+
+  it("leaves the check-these-jobs section out when nothing stands out", async () => {
+    await propose();
+    const create = ghCalls.find((args) => args.join(" ").includes("pr create"));
+    expect(create?.[create.indexOf("--body") + 1]).not.toContain("## Check these jobs");
   });
 
   it("refuses a label that would write something other than a runs-on", async () => {

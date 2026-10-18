@@ -14,7 +14,7 @@ import { downloadCached, extractArchive } from "./download.js";
 import { CliError, InterruptedError } from "./errors.js";
 import { CommandFailedError, execCommand } from "./exec.js";
 import type { CommandRunner, ExecOptions, SpawnHook } from "./exec.js";
-import { fixLabelFor, fixLabels, proposeWorkflowFix } from "./fix.js";
+import { describeCaveat, fixLabelFor, fixLabels, proposeWorkflowFix } from "./fix.js";
 import type { WorkflowFixResult } from "./fix.js";
 import { GhClient } from "./gh.js";
 import { silentLogger } from "./logger.js";
@@ -817,7 +817,7 @@ export function reportFix(
   fix: WorkflowFixResult,
   served?: ReadonlyArray<readonly string[]>,
 ): void {
-  const { dim, green, bold } = logger.styles;
+  const { dim, green, bold, yellow } = logger.styles;
   const line = (text: string) => logger.raw(`    ${text}\n`);
 
   switch (fix.status) {
@@ -832,13 +832,16 @@ export function reportFix(
       return;
     case "dry-run":
     case "opened":
-      for (const { file, job, label, from } of fix.jobs) {
+      for (const { file, job, label, from, caveats } of fix.jobs) {
         const hosted = from.length > 0 ? from.join(", ") : "its current runner";
         line(
           `${green("✓")} ${file} ${dim("→")} ${bold(job)} stays on ${hosted} ${dim(
             `— ${label} when out of minutes (${runnerVariable(label)})`,
           )}`,
         );
+        for (const caveat of caveats) {
+          line(`  ${yellow("!")} ${describeCaveat(caveat, label, bold)}`);
+        }
       }
       if (fix.removesProbe) {
         line(`${green("✓")} removed the ${bold(PROBE_JOB_ID)} job an older version added`);

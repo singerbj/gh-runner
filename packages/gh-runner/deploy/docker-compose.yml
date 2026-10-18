@@ -9,10 +9,12 @@
 # Optional: GH_RUNNER_NAME (default: the container's hostname) and
 # GH_RUNNER_LABELS (extra labels, comma-separated).
 #
-# Jobs don't inherit GH_TOKEN, but they run as the same user as gh-runner and
-# could read it from /proc, so scope it to the one repo. Jobs get no Docker
-# socket and nothing from the host, so `docker build`, `services:` and
-# `container:` jobs won't run here.
+# Jobs run on GitHub's runner image plus Node LTS and gh, as a user with
+# passwordless sudo — the same machine `gh-runner linux` runs in Docker. They
+# don't inherit GH_TOKEN, but they run as the same user as gh-runner and could
+# read it from /proc, so scope it to the one repo. Jobs get no Docker socket and
+# nothing from the host, so `docker build`, `services:` and `container:` jobs
+# won't run here.
 
 services:
   gh-runner:
@@ -26,8 +28,8 @@ services:
       GH_RUNNER_NAME: ${GH_RUNNER_NAME:-}
       GH_RUNNER_LABELS: ${GH_RUNNER_LABELS:-}
     volumes:
-      # The runner download cache and job workspaces, kept across redeploys.
-      - gh-runner:/home/node
+      # The runner download cache, kept across redeploys.
+      - gh-runner-cache:/home/runner/.cache
 
 volumes:
-  gh-runner:
+  gh-runner-cache:

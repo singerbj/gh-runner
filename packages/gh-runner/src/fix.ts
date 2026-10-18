@@ -22,7 +22,7 @@ import {
   inspectWorkflows,
   listWorkflowFiles,
 } from "./workflows.js";
-import type { RunsOnFix, RunsOnTarget } from "./workflows.js";
+import type { JobCaveat, RunsOnFix, RunsOnTarget } from "./workflows.js";
 
 /**
  * The label a rewritten job moves to when GitHub-hosted runners can't start.
@@ -67,6 +67,8 @@ export interface FixedJob {
   label: string;
   /** The hosted runner it keeps using otherwise, e.g. `["macos-14"]`. */
   from: string[];
+  /** What it may not find on a gh-runner machine. */
+  caveats: JobCaveat[];
 }
 
 export type WorkflowFixResult =
@@ -197,6 +199,7 @@ export async function proposeWorkflowFix(options: WorkflowFixOptions): Promise<W
       job: target.job,
       label: labelFor(target),
       from: target.labels,
+      caveats: target.caveats ?? [],
     }));
 
     await git(["add", "--", ...files], { cwd: worktree });
@@ -275,6 +278,39 @@ async function identityArgs(commandRunner: CommandRunner, exec: ExecOptions): Pr
   return ["-c", "user.name=gh-runner", "-c", "user.email=gh-runner@users.noreply.github.com"];
 }
 
+const joinNames = (items: readonly string[], code: (text: string) => string): string =>
+  items.map(code).join(", ");
+
+/**
+ * One line on what a fallback machine may not give a job. `code` marks up
+ * names: backticks for the PR body, a terminal style for the CLI.
+ */
+export function describeCaveat(
+  caveat: JobCaveat,
+  label: string,
+  code: (text: string) => string,
+): string {
+  const noDocker = "a Docker daemon — the containerised Linux runner has none";
+  switch (caveat.kind) {
+    case "container":
+      return `runs in a ${code("container:")}, which needs ${noDocker}`;
+    case "services":
+      return `starts ${code("services:")} (${joinNames(caveat.names, code)}), which need ${noDocker}`;
+    case "docker":
+      return `runs Docker in ${code(caveat.step)}, which needs ${noDocker}`;
+    case "arch":
+      return (
+        `asks for ${code(caveat.runner)} (${caveat.arch}), but falls back to any ` +
+        `${code(label)} runner, whatever its CPU`
+      );
+    case "node":
+      return (
+        `runs ${joinNames(caveat.commands, code)} without ${code("actions/setup-node")}, so it gets ` +
+        `whichever Node the fallback machine has`
+      );
+  }
+}
+
 /** The distinct labels the rewrite writes, in the order jobs first ask for them. */
 export function fixLabels(jobs: readonly FixedJob[]): string[] {
   return [...new Set(jobs.map((entry) => entry.label))];
@@ -336,10 +372,34 @@ have.
 `
     : "";
 
+  const flagged = jobs.filter((entry) => entry.caveats.length > 0);
+  const caveats =
+    flagged.length > 0
+      ? `
+## Check these jobs
+
+They may not run the same on a gh-runner machine. Nothing about them changes until they fall
+back, and gh-runner only reads the obvious patterns, so this list isn't everything:
+
+${flagged
+  .flatMap((entry) =>
+    entry.caveats.map(
+      (caveat) =>
+        `- \`${entry.job}\` in \`${entry.file}\` ${describeCaveat(caveat, entry.label, (text) => `\`${text}\``)}`,
+    ),
+  )
+  .join("\n")}
+
+The Linux runner gh-runner provides (\`gh-runner linux\` in Docker, or the Docker Compose
+deployment) is GitHub's runner image plus Node LTS and \`gh\`, with passwordless \`sudo\` — so
+\`apt-get\` works — and no Docker daemon. A native runner has whatever its machine has.
+`
+      : "";
+
   return `## What this changes
 
 ${changes}
-${probe}
+${probe}${caveats}
 ## How it works
 
 Nothing in this workflow checks anything. \`runs-on\` reads a repository variable, which GitHub

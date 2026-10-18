@@ -50,7 +50,7 @@ Docker can provide Linux anywhere. It can't provide macOS or Windows: there's no
 
 ## Linux in a container
 
-`gh-runner linux` on a Mac or PC runs GitHub's runner image in Docker. It registers the same labels as a native Linux machine.
+`gh-runner linux` on a Mac or PC runs `ghcr.io/singerbj/gh-runner` in Docker: GitHub's runner image plus Node LTS and `gh`, the same image as the [always-on deployment](./docker). It registers the same labels as a native Linux machine.
 
 ```sh
 gh-runner linux --docker-platform linux/amd64   # x64 under emulation
@@ -58,6 +58,7 @@ gh-runner linux --docker-image my/runner:1      # your own image
 ```
 
 - **Isolated:** no host mounts and no Docker socket, so jobs can't see your files.
+- **Passwordless `sudo`:** root inside the container only, so `apt-get` works.
 - **No `docker build`:** jobs that need Docker won't work in this mode.
 - **First run** pulls a ~1 GB image.
 

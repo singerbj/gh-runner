@@ -39,6 +39,23 @@ Each job keeps its platform:
 
 Jobs that are already self-hosted, use an expression, or use a runner `group:` are left alone.
 
+## Jobs to check
+
+Setup also reads each job it rewrites for things a fallback machine may not provide, and lists them under the job and in the PR description:
+
+```txt
+    ✓ ci.yml → e2e stays on ubuntu-latest — gh-runner-linux when out of minutes
+      ! starts services: (postgres), which need a Docker daemon — the containerised Linux runner has none
+```
+
+| Pattern                                         | Why                                                                           |
+| ----------------------------------------------- | ----------------------------------------------------------------------------- |
+| `container:`, `services:`, `docker` steps       | They need a Docker daemon. The [Docker runner](./docker) has none.            |
+| A runner name with a CPU, `ubuntu-24.04-arm`    | The fallback label matches a runner of either architecture.                   |
+| `node`/`npm`/`npx` without `actions/setup-node` | The job gets whichever Node the fallback machine has, not a version it chose. |
+
+It only reads the workflow, so it can't know every tool a step calls. Nothing about these jobs changes until they fall back.
+
 ## The workflow check
 
 Every runner session reads `.github/workflows` first and reports which jobs will land on it:

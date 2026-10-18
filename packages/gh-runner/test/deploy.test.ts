@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { OS_LABELS, fallbackRunsOn } from "../src/constants.js";
+import { DEFAULT_IMAGE } from "../src/docker.js";
 import { parseArgs } from "../src/options.js";
 import { readFallback } from "../src/workflows.js";
 
@@ -35,7 +36,11 @@ describe("deploy/docker-compose.yml", () => {
     expect(service.image).toBe("ghcr.io/singerbj/gh-runner:latest");
     expect(service.restart).toBe("unless-stopped");
     expect(service.stop_grace_period).toBe("60s");
-    expect(service.volumes).toEqual(["gh-runner:/home/node"]);
+    expect(service.volumes).toEqual(["gh-runner-cache:/home/runner/.cache"]);
+  });
+
+  it("runs the image `gh-runner linux` runs in Docker, so a job sees one machine", () => {
+    expect(DEFAULT_IMAGE).toBe(service.image);
   });
 
   it("passes on every variable the entrypoint reads", () => {
@@ -45,13 +50,23 @@ describe("deploy/docker-compose.yml", () => {
 });
 
 describe("deploy/Dockerfile", () => {
-  it("starts the entrypoint under tini, as the unprivileged node user", () => {
-    expect(dockerfile).toMatch(/^FROM node:lts$/m);
-    expect(dockerfile).toMatch(/^USER node$/m);
+  it("starts the entrypoint under tini, as GitHub's unprivileged runner user", () => {
+    expect(dockerfile).toMatch(/^FROM ghcr\.io\/actions\/actions-runner:latest$/m);
+    expect(dockerfile.match(/^USER .*$/gm)?.at(-1)).toBe("USER runner");
     expect(dockerfile).toContain('ENTRYPOINT ["tini", "--", "gh-runner-entrypoint"]');
     expect(dockerfile).toContain(
       "COPY --chmod=755 entrypoint.sh /usr/local/bin/gh-runner-entrypoint",
     );
+  });
+
+  it("leaves `gh-runner linux` in the runner's directory, where it runs config.sh", () => {
+    expect(dockerfile.match(/^WORKDIR .*$/gm)?.at(-1)).toBe("WORKDIR /home/runner");
+  });
+
+  it("adds Node and gh to GitHub's image, and keeps its passwordless sudo", () => {
+    expect(dockerfile).toContain("COPY --from=node:lts /usr/local/bin/node /usr/local/bin/node");
+    expect(dockerfile).toMatch(/apt-get install .*\bgh\b/);
+    expect(dockerfile).not.toMatch(/sudoers/);
   });
 
   it("installs the version the release workflow passes in", () => {

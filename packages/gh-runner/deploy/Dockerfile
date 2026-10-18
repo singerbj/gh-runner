@@ -9,9 +9,26 @@
 #
 #   docker build --build-arg GH_RUNNER_VERSION=0.0.2 -t gh-runner packages/gh-runner/deploy
 #
-# node:lts already carries git, curl and the ICU libraries the actions runner
-# needs, so the only additions are gh and an init process.
-FROM node:lts
+# It is also the image `gh-runner linux` runs in Docker, so a job sees the same
+# machine whichever of the two picks it up: GitHub's runner image (Ubuntu, git,
+# curl, jq, the Docker CLI, and a `runner` user with passwordless sudo, so
+# `apt-get` and `npx playwright install --with-deps` work), plus Node LTS, gh,
+# and an init process.
+FROM ghcr.io/actions/actions-runner:latest
+
+USER root
+
+# Node comes from the official image rather than a distro package, so it is the
+# same LTS build the node:lts image carries.
+COPY --from=node:lts /usr/local/bin/node /usr/local/bin/node
+COPY --from=node:lts /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=node:lts /usr/local/include/node /usr/local/include/node
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+ && if [ -d /usr/local/lib/node_modules/corepack ]; then \
+      ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack; \
+    fi \
+ && node --version && npm --version
 
 RUN install -d -m 755 /etc/apt/keyrings \
  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -28,11 +45,12 @@ RUN npm install -g --no-fund --no-audit "@singerbj/gh-runner@${GH_RUNNER_VERSION
 
 COPY --chmod=755 entrypoint.sh /usr/local/bin/gh-runner-entrypoint
 
-# The actions runner refuses to run as root. The image's "node" user owns
-# /home/node, so a named volume there (the runner cache, job workspaces)
-# starts out owned by it too.
-USER node
-WORKDIR /home/node
+# The actions runner refuses to run as root. The runner download cache lives
+# here, made up front so a named volume mounted on it starts out owned by
+# `runner` too.
+USER runner
+RUN mkdir -p /home/runner/.cache/gh-runner
+WORKDIR /home/runner
 
 LABEL org.opencontainers.image.source="https://github.com/singerbj/gh-runner" \
       org.opencontainers.image.description="An always-on Linux GitHub Actions runner that GitHub-hosted jobs fall back to when the repo can't start them" \

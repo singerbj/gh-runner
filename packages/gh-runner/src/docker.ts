@@ -4,10 +4,12 @@ import type { CommandRunner, ExecOptions, SpawnHook } from "./exec.js";
 import type { RunnerArch } from "./platform.js";
 
 /**
- * GitHub's own runner image. It ships the runner already installed, so the
- * container path skips the download-and-extract dance entirely.
+ * The image the Docker deployment runs: GitHub's own runner image plus Node LTS
+ * and gh. It ships the runner already installed, so the container path skips
+ * the download-and-extract dance entirely — and a job finds the same machine
+ * here as on an always-on Docker runner.
  */
-export const DEFAULT_IMAGE = "ghcr.io/actions/actions-runner:latest";
+export const DEFAULT_IMAGE = "ghcr.io/singerbj/gh-runner:latest";
 
 export interface DockerRunOptions {
   repo: string;

@@ -4,10 +4,10 @@ Every job stays on the GitHub-hosted runner it already uses. gh-runner moves job
 
 1. Run `npx @singerbj/gh-runner setup` in the repository. It checks the repo is private, rewrites each GitHub-hosted `runs-on`, and opens a pull request. It registers no runner. If it says the repo is public, stop and tell me: gh-runner refuses public repos. If it can't run because `gh` isn't installed or logged in, make the same edit by hand, as described at the end, and commit it on a new branch.
 
-2. Review the change, and list for me any rewritten job that might not work on a gh-runner machine. Don't change them. Look for:
+2. Review the change, and list for me any rewritten job that might not work on a gh-runner machine. Don't change them. `gh-runner setup` lists the obvious ones in its output and in the pull request; check those and look further. Look for:
    - `container:`, `services:`, or steps that run `docker`. The Docker deployment of gh-runner has no Docker socket.
    - An architecture in the runner name, such as `ubuntu-24.04-arm` or an Intel `macos-13`. The fallback machine may have a different CPU.
-   - Tools the job uses without installing them. GitHub's images come with far more than a personal machine or a container.
+   - Tools the job uses without installing them. GitHub's images come with far more than a personal machine or a container. gh-runner's Linux container is GitHub's runner image plus Node LTS and `gh`, with passwordless `sudo`.
 
 3. Add a short "Self-hosted fallback" section to the README (or CONTRIBUTING.md, if CI is documented there), pushed to the same pull request branch. It should say:
    - Jobs run on GitHub-hosted runners, and fall back to a gh-runner machine only when the repository can't start hosted jobs.

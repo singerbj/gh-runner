@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CliError } from "../src/errors.js";
 import { execCommand } from "../src/exec.js";
 import type { CommandRunner, ExecResult } from "../src/exec.js";
-import { silentLogger } from "../src/logger.js";
+import { createLogger, silentLogger } from "../src/logger.js";
 import { parseArgs } from "../src/options.js";
 import { ghRunnerSetup } from "../src/setup.js";
 
@@ -100,6 +100,34 @@ describe("ghRunnerSetup", () => {
     expect(fix.status).toBe("dry-run");
     expect(remoteBranches()).not.toContain("gh-runner/");
     expect(ghCalls.some((call) => call.includes("pr create"))).toBe(false);
+  });
+
+  it("lists what a fallback machine may not give a job", async () => {
+    await writeFile(
+      join(checkout, ".github", "workflows", "ci.yml"),
+      [
+        "jobs:",
+        "  build:",
+        "    runs-on: ubuntu-latest",
+        "    container: node:20",
+        "    steps:",
+        "      - run: npm ci",
+        "",
+      ].join("\n"),
+    );
+    git(checkout, "commit", "--quiet", "-am", "container");
+    git(checkout, "push", "--quiet", "origin", "main");
+
+    let output = "";
+    const logger = createLogger({ color: false, write: (chunk) => (output += chunk) });
+    await ghRunnerSetup({ cwd: checkout }, { commandRunner: runner, logger });
+
+    expect(output).toContain(
+      "      ! runs in a container:, which needs a Docker daemon — the containerised Linux runner has none\n",
+    );
+    expect(output).toContain(
+      "      ! runs npm without actions/setup-node, so it gets whichever Node the fallback machine has\n",
+    );
   });
 
   it("says so when the repo is already set up", async () => {

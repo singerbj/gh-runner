@@ -58,16 +58,16 @@ It only reads the workflow, so it can't know every tool a step calls. Nothing ab
 
 ## The workflow check
 
-Every runner session reads `.github/workflows` first and reports which jobs will land on it:
+Every runner session reads `.github/workflows` from the default branch on GitHub first — the copy GitHub runs, not your checkout — and reports which jobs will land on it:
 
 ```txt
-==> Checking .github/workflows for a matching runs-on...
+==> Checking .github/workflows on main for a matching runs-on...
     ✓ bench.yml → bench will run here
     ! ci.yml:9 → gpu wants cuda, which this runner won't have
       register it too with: --labels cuda
 ```
 
-If nothing targets the runner, it offers to open the same PR as `gh-runner setup`.
+If nothing targets the runner, it offers to open the same PR as `gh-runner setup` — unless one is already open, in which case it points at that one. If you decline, it warns that the runner will sit idle.
 
 ## Your working tree is safe
 

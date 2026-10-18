@@ -164,15 +164,17 @@ rather than suggesting a `--labels` flag that would only lie to GitHub about wha
 
 ## The workflow check
 
-Registering a runner nothing targets is the easiest way to waste ten minutes. On startup, `gh-runner` reads `.github/workflows/*.yml` and tells you which jobs will actually land here:
+Registering a runner nothing targets is the easiest way to waste ten minutes. On startup, `gh-runner` reads `.github/workflows/*.yml` from the repo's default branch on GitHub — what GitHub will actually run, not whatever your checkout happens to have — and tells you which jobs will actually land here:
 
 ```
-==> Checking .github/workflows for a matching runs-on...
+==> Checking .github/workflows on main for a matching runs-on...
     ✓ .github/workflows/bench.yml → bench will run here
     ! .github/workflows/ci.yml:9 → gpu wants cuda, which this runner won't have
       register it too with: --labels cuda
     ! no job targets this runner; 3 target GitHub-hosted runners
 ```
+
+If GitHub can't be reached it falls back to the local checkout and warns that it may not match. When no job can reach the runner and no workflow reads its `GH_RUNNER_*` variable, it warns that the runner will sit idle rather than leaving you to notice the missing "watching for GitHub-hosted runners being refused" line.
 
 The workflows are parsed with a real YAML parser ([`yaml`](https://www.npmjs.com/package/yaml), the package's only dependency), so anchors and aliases resolve the way GitHub sees them, a `runs-on:` inside a `run:` script block is correctly ignored, and a malformed file is reported as malformed instead of silently mis-read. Every shape `runs-on` accepts is understood — a scalar, an inline list, a block sequence, and the `group:`/`labels:` mapping — and it says so rather than guessing when the value is a `${{ }}` expression or a bare runner group.
 

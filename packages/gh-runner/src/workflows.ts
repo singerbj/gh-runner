@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { LineCounter, isMap, isScalar, isSeq, parseDocument } from "yaml";
 import type { Pair } from "yaml";
 import { fallbackRunsOn, labelForVariable } from "./constants.js";
+import type { GhClient } from "./gh.js";
 import type { RunnerArch, RunnerOs } from "./platform.js";
 
 export interface RunsOnTarget {
@@ -564,14 +565,54 @@ export async function listWorkflowFiles(repoRoot: string): Promise<string[] | nu
 }
 
 /**
+ * Where a workflow scan reads from: a checkout on disk, or a branch on GitHub.
+ * Only the second is what GitHub will actually run.
+ */
+export interface WorkflowSource {
+  /** File names in `.github/workflows`, or null when there is no such directory. */
+  list(): Promise<string[] | null>;
+  /** One file's text, or null to skip it. */
+  read(name: string): Promise<string | null>;
+}
+
+/** The workflows in a checkout, as they are on disk right now. */
+export function checkoutWorkflows(repoRoot: string): WorkflowSource {
+  return {
+    list: () => listWorkflowFiles(repoRoot),
+    read: (name) =>
+      readFile(join(repoRoot, ".github", "workflows", name), "utf8").catch(() => null),
+  };
+}
+
+/**
+ * The workflows on a branch of the repo on GitHub — the default branch when
+ * `ref` is left out, which is the copy GitHub schedules from.
+ *
+ * Unlike a checkout, a file that can't be read throws: a scan that quietly
+ * skipped one would report a repo that isn't there.
+ */
+export function githubWorkflows(gh: GhClient, repo: string, ref?: string): WorkflowSource {
+  return {
+    list: async () => {
+      const names = await gh.workflowFileNames(repo, ref);
+      return names
+        ? names.filter((name) => WORKFLOW_EXTENSIONS.some((ext) => name.endsWith(ext))).toSorted()
+        : null;
+    },
+    read: (name) => gh.workflowFile(repo, name, ref),
+  };
+}
+
+/**
  * Reads a repo's workflows and works out which jobs — if any — a runner with
- * `runnerLabels` will actually pick up.
+ * `runnerLabels` will actually pick up. A string is a checkout's root.
  */
 export async function inspectWorkflows(
-  repoRoot: string,
+  from: string | WorkflowSource,
   runnerLabelSets: ReadonlyArray<readonly string[]>,
 ): Promise<WorkflowReport> {
-  const files = await listWorkflowFiles(repoRoot);
+  const source = typeof from === "string" ? checkoutWorkflows(from) : from;
+  const files = await source.list();
   if (files === null) {
     return {
       scanned: false,
@@ -593,14 +634,10 @@ export async function inspectWorkflows(
 
   for (const name of files) {
     const file = `.github/workflows/${name}`;
-    let source: string;
-    try {
-      source = await readFile(join(repoRoot, ".github", "workflows", name), "utf8");
-    } catch {
-      continue;
-    }
+    const text = await source.read(name);
+    if (text === null) continue;
 
-    const { targets, error } = parseWorkflow(source, file);
+    const { targets, error } = parseWorkflow(text, file);
     if (error) {
       unparsed.push({ file, message: error });
       continue;

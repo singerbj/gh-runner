@@ -17,7 +17,7 @@ import { execCommand } from "../src/exec.js";
 import type { CommandRunner } from "../src/exec.js";
 import { GhClient } from "../src/gh.js";
 import { silentLogger } from "../src/logger.js";
-import { HostedUsageWatcher, RERUN_WINDOW_MS } from "../src/usage.js";
+import { HostedUsageWatcher } from "../src/usage.js";
 import { PROBE_JOB_ID, applyWorkflowFix, hostedRunnerOs, parseRunsOn } from "../src/workflows.js";
 import { LEGACY_PROBE } from "./support/legacy.js";
 import { BILLING_MESSAGE, MockGitHub } from "./support/mock-github.js";
@@ -92,10 +92,7 @@ afterEach(async () => {
  * a real child process — fake-gh.mjs — so exit codes, stderr and stdout are
  * parsed exactly as they are from the real binary.
  */
-async function session(
-  github: MockGitHub,
-  options: { labels?: string[]; spawn?: boolean; workflowFiles?: string[] } = {},
-) {
+async function session(github: MockGitHub, options: { labels?: string[]; spawn?: boolean } = {}) {
   let runner: CommandRunner = github.commandRunner();
 
   if (options.spawn) {
@@ -116,7 +113,6 @@ async function session(
     gh: new GhClient({ runner }),
     logger: silentLogger,
     labels: options.labels ?? MAC_SESSION,
-    ...(options.workflowFiles ? { workflowFiles: options.workflowFiles } : {}),
     now: () => github.now,
     schedule: (fn) => {
       beats.push(fn);
@@ -144,7 +140,7 @@ describe("out-of-minutes simulation", () => {
     expect([...github.variables.keys()]).toEqual([]);
   });
 
-  it("notices refused jobs, sets the variables, and re-runs them on the self-hosted runner", async () => {
+  it("notices refused jobs and sets the variables, so new jobs run on the self-hosted runner", async () => {
     const github = new MockGitHub();
     github.online = [LINUX_RUNNER, MAC_RUNNER];
     const { watcher } = await session(github, { spawn: true });
@@ -159,28 +155,27 @@ describe("out-of-minutes simulation", () => {
     const result = await watcher.check();
 
     expect(result.action).toBe("set");
-    expect(result.rerun).toEqual([run.id]);
     expect(Object.fromEntries(github.variables)).toEqual({
       GH_RUNNER: "gh-runner",
       GH_RUNNER_MAC: "gh-runner-mac",
       GH_RUNNER_LINUX: "gh-runner-linux",
     });
 
-    // The re-run reads the variables, so it doesn't need a hosted runner.
-    expect(run.run_attempt).toBe(2);
-    expect(run.conclusion).toBe("success");
-    expect(placement(run)).toEqual({ build: "gh-runner-linux", "test-mac": "gh-runner-mac" });
+    // The refused run is left as it was — only new jobs move.
+    expect(run.run_attempt).toBe(1);
+    expect(placement(run)).toEqual({ build: "refused", "test-mac": "skipped" });
 
-    // Every push after that goes straight to the self-hosted runner, and the
-    // session doesn't flap now that the refused run has turned green.
+    // Every push after that reads the variables and goes straight to the
+    // self-hosted runner, and the session doesn't flap now that runs are green.
     github.advance(HOUR);
-    expect(github.push(FIXED).conclusion).toBe("success");
+    const next = github.push(FIXED);
+    expect(next.conclusion).toBe("success");
+    expect(placement(next)).toEqual({ build: "gh-runner-linux", "test-mac": "gh-runner-mac" });
     expect(await watcher.check()).toMatchObject({
       status: { state: "blocked" },
       action: "none",
-      rerun: [],
     });
-    expect(github.reruns).toEqual([run.id]);
+    expect(github.reruns).toEqual([]);
   });
 
   it("checks again on every heartbeat, not just at startup", async () => {
@@ -192,12 +187,12 @@ describe("out-of-minutes simulation", () => {
     expect(beats).toHaveLength(1);
 
     github.hostedAvailable = false;
-    const run = github.push(FIXED);
+    github.push(FIXED);
     beats[0]?.();
     await watcher.check();
 
     expect(github.variables.size).toBe(3);
-    expect(run.conclusion).toBe("success");
+    expect(github.push(FIXED).conclusion).toBe("success");
   });
 
   it("gives the jobs back to GitHub when the session ends — nothing waits on a runner that's gone", async () => {
@@ -225,24 +220,29 @@ describe("out-of-minutes simulation", () => {
     expect(placement(github.push(FIXED))).toEqual({ build: "hosted", "test-mac": "hosted" });
   });
 
-  it("catches up when it starts after the fact — re-running the last day, not older", async () => {
+  it("never re-runs refused runs, even when it starts after the fact — it only listens for new jobs", async () => {
     const github = new MockGitHub();
     github.online = [LINUX_RUNNER, MAC_RUNNER];
     github.hostedAvailable = false;
 
-    // Refused while nobody was running gh-runner.
-    const stale = github.push(FIXED);
-    github.advance(RERUN_WINDOW_MS + HOUR);
+    // Refused while nobody was running gh-runner: ours, a fork's, and a
+    // workflow that stays hosted.
+    const earlier = github.push(FIXED);
+    github.advance(HOUR);
+    const fork = github.push(FIXED, { headRepository: "stranger/thing" });
+    const lint = github.push(UNTOUCHED, { path: "lint.yml" });
     const recent = github.push(FIXED);
     github.advance(HOUR);
 
     const { watcher } = await session(github);
-    const result = await watcher.check();
+    expect((await watcher.check()).action).toBe("set");
 
-    expect(result.action).toBe("set");
-    expect(result.rerun).toEqual([recent.id]);
-    expect(recent.conclusion).toBe("success");
-    expect(stale.run_attempt).toBe(1);
+    expect(github.reruns).toEqual([]);
+    for (const run of [earlier, fork, lint, recent]) {
+      expect(run.run_attempt).toBe(1);
+      expect(run.conclusion).toBe("failure");
+    }
+    expect(github.push(FIXED).conclusion).toBe("success");
   });
 
   it("only moves the platforms it serves — a Linux box never queues the macOS jobs", async () => {
@@ -251,28 +251,15 @@ describe("out-of-minutes simulation", () => {
     const { watcher } = await session(github, { labels: LINUX_SESSION });
 
     github.hostedAvailable = false;
-    const run = github.push(FIXED);
+    github.push(FIXED);
     await watcher.check();
 
     expect([...github.variables.keys()].toSorted()).toEqual(["GH_RUNNER", "GH_RUNNER_LINUX"]);
     // build ran here; test-mac had nowhere to go and was refused, not queued.
-    expect(placement(run)).toEqual({ build: "gh-runner-linux", "test-mac": "refused" });
-  });
-
-  it("re-runs only runs that will move: not a fork's, and not a workflow that stays hosted", async () => {
-    const github = new MockGitHub();
-    github.online = [LINUX_RUNNER, MAC_RUNNER];
-    github.hostedAvailable = false;
-
-    const fork = github.push(FIXED, { headRepository: "stranger/thing" });
-    const lint = github.push(UNTOUCHED, { path: "lint.yml" });
-    const ours = github.push(FIXED);
-    github.advance(60_000);
-
-    const { watcher } = await session(github, { workflowFiles: [".github/workflows/ci.yml"] });
-    expect((await watcher.check()).rerun).toEqual([ours.id]);
-    expect(fork.run_attempt).toBe(1);
-    expect(lint.run_attempt).toBe(1);
+    expect(placement(github.push(FIXED))).toEqual({
+      build: "gh-runner-linux",
+      "test-mac": "refused",
+    });
   });
 
   it("clears the variables when a hosted job gets through again", async () => {
@@ -318,10 +305,9 @@ describe("out-of-minutes simulation", () => {
     expect(placement(refused)).toEqual({ build: "refused", "test-mac": "skipped" });
     github.advance(60_000);
 
-    const result = await watcher.check();
-    expect(result.action).toBe("set");
-    expect(result.rerun).toEqual([refused.id]);
-    expect(refused.conclusion).toBe("success");
+    expect((await watcher.check()).action).toBe("set");
+    expect(refused.run_attempt).toBe(1);
+    expect(github.push(FIXED).conclusion).toBe("success");
   });
 
   it("cleans up after a session that was killed too hard to clean up itself", async () => {
@@ -367,7 +353,7 @@ describe("out-of-minutes simulation", () => {
     const { watcher } = await session(github, { spawn: true });
 
     github.hostedAvailable = false;
-    const run = github.push(FIXED);
+    github.push(FIXED);
 
     github.failing = (_method, path) => path.includes("/actions/runs");
     expect((await watcher.check()).status.state).toBe("unknown");
@@ -380,14 +366,14 @@ describe("out-of-minutes simulation", () => {
     // Nor the other way: an outage mustn't take the variables down.
     github.failing = null;
     await watcher.check();
-    expect(run.conclusion).toBe("success");
+    expect(github.variables.size).toBe(3);
     github.now = Date.UTC(2026, 9, 2);
     github.failing = (_method, path) => path.includes("/actions/runs");
     expect((await watcher.check()).status.state).toBe("unknown");
     expect(github.variables.size).toBe(3);
   });
 
-  it("doesn't re-run anything when it couldn't set a variable — the re-run would be refused too", async () => {
+  it("says it couldn't check when it couldn't set a variable", async () => {
     const github = new MockGitHub();
     github.online = [LINUX_RUNNER, MAC_RUNNER];
     const { watcher } = await session(github);

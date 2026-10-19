@@ -216,24 +216,23 @@ With the variable unset — which it is, unless the repo is out of minutes _and_
 
 **Your machine only takes over when GitHub-hosted runners can't start** — the repo is out of included minutes, over a spending limit, or a payment failed. While `gh-runner` is running it watches the repo's runs, and when GitHub refuses to start a job for billing reasons (a job that failed on no runner, with no steps, annotated _"The job was not started because recent account payments have failed or your spending limit needs to be increased"_) it:
 
-1. sets `GH_RUNNER_LINUX=gh-runner-linux` — one variable per label it serves — so every job from then on resolves to this machine, and
-2. re-runs the refused runs from the last 24 hours, which now land here instead. Never a run from a fork: re-running someone else's code on your machine stays a decision for a person.
+sets `GH_RUNNER_LINUX=gh-runner-linux` — one variable per label it serves — so every job from then on resolves to this machine. It only listens for new jobs: runs GitHub already refused stay failed, and re-running them is up to you.
 
 It reads GitHub's own verdict rather than doing arithmetic on billing data, so included minutes, budgets, spending limits and failed payments are all handled the same way, and it needs no billing scope.
 
 **It hands everything back** — deletes the variables — when:
 
 - a GitHub-hosted job succeeds again (a raised spending limit shows up in whichever workflows weren't rewritten),
-- a new month starts and the included minutes reset. If hosted runners are still unavailable — a spending limit rather than a quota — the first job of the month is refused, and the variables go straight back up with that run re-run,
+- a new month starts and the included minutes reset. If hosted runners are still unavailable — a spending limit rather than a quota — the first job of the month is refused, and the variables go straight back up,
 - **the session ends.** The variables mean "a gh-runner is here _and_ GitHub-hosted runners aren't", so they never outlive the machine that set them.
 
 What to expect:
 
-| Minutes left? | `gh-runner` running? | Jobs run on                                                                   |
-| ------------- | -------------------- | ----------------------------------------------------------------------------- |
-| yes           | either way           | GitHub-hosted, exactly as before                                              |
-| no            | yes                  | your machine — after at most one refused run, which is re-run here            |
-| no            | no                   | nowhere; GitHub refuses them. Start `gh-runner` and it re-runs the last day's |
+| Minutes left? | `gh-runner` running? | Jobs run on                                                           |
+| ------------- | -------------------- | --------------------------------------------------------------------- |
+| yes           | either way           | GitHub-hosted, exactly as before                                      |
+| no            | yes                  | your machine — after at most one refused run, which stays failed      |
+| no            | no                   | nowhere; GitHub refuses them. Start `gh-runner` and new jobs run here |
 
 A session only sets variables for labels it serves, so a Linux box never pulls macOS jobs into a queue nothing will answer. Two machines serving the same label share its variable: the one that leaves takes it down, and the one still running puts it back on its next check, two minutes later. An API error changes nothing, in either direction.
 

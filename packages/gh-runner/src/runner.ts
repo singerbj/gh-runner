@@ -386,7 +386,6 @@ export async function ghRunner(
           cleanupGh,
           logger,
           labels,
-          ...(workflows?.scanned ? { workflowFiles: workflows.fallbackFiles } : {}),
         })
       : undefined;
   if (usage) {

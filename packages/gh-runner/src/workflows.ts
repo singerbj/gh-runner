@@ -88,11 +88,6 @@ export interface WorkflowReport {
   unparsed: Array<{ file: string; message: string }>;
   /** Labels a near-miss job wants that this runner doesn't have. */
   suggestedLabels: string[];
-  /**
-   * Workflow files with a job that reads a runner variable — the runs worth
-   * re-running once a variable is set, since only those will move.
-   */
-  fallbackFiles: string[];
   /** True when an older fix's probe job is still in a workflow, and the fix would remove it. */
   legacyProbe: boolean;
 }
@@ -624,7 +619,6 @@ export async function inspectWorkflows(
       unknown: [],
       unparsed: [],
       suggestedLabels: [],
-      fallbackFiles: [],
       legacyProbe: false,
     };
   }
@@ -671,9 +665,6 @@ export async function inspectWorkflows(
     unknown: verdicts.filter((v) => v.kind === "unknown" && !v.target.probe).map((v) => v.target),
     unparsed,
     suggestedLabels,
-    fallbackFiles: [
-      ...new Set(verdicts.filter((v) => v.target.fallback).map((v) => v.target.file)),
-    ],
     legacyProbe: verdicts.some((v) => v.target.probe),
   };
 }

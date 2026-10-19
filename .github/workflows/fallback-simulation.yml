@@ -7,8 +7,8 @@ name: Out-of-minutes simulation
 #
 # `simulate` drives the real workflow rewrite, GhClient and HostedUsageWatcher
 # (through a real `gh`-shaped child process) against a stand-in for the Actions
-# API and scheduler: minutes run out, refused runs are noticed and re-run on the
-# self-hosted runner, the session ending hands everything back to GitHub, a new
+# API and scheduler: minutes run out, refused runs are noticed and new jobs move
+# to the self-hosted runner, the session ending hands everything back to GitHub, a new
 # month or a hosted success clears it, outages change nothing. See
 # packages/gh-runner/test/simulation.test.ts.
 #

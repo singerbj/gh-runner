@@ -19,7 +19,7 @@ That PR doesn't hand your CI to a laptop that might be closed. Every job stays o
 runs-on: ${{ vars.GH_RUNNER_LINUX || 'ubuntu-latest' }}
 ```
 
-No job decides that — it couldn't, with no runner to start on. `gh-runner` notices GitHub refusing jobs, sets the variable while it's running, re-runs what was refused, and clears it when it stops or the minutes come back. The [out-of-minutes simulation](.github/workflows/fallback-simulation.yml) proves the whole cycle on every change, against a mocked GitHub.
+No job decides that — it couldn't, with no runner to start on. `gh-runner` notices GitHub refusing jobs, sets the variable while it's running so new jobs land on it, and clears it when it stops or the minutes come back. The [out-of-minutes simulation](.github/workflows/fallback-simulation.yml) proves the whole cycle on every change, against a mocked GitHub.
 
 ## What's in here
 

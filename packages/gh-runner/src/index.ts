@@ -74,7 +74,6 @@ export type {
 export {
   HostedUsageWatcher,
   BILLING_BLOCK_PATTERN,
-  RERUN_WINDOW_MS,
   CHECK_INTERVAL_MS,
   startOfUtcMonth,
 } from "./usage.js";

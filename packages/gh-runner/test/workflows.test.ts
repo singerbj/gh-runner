@@ -322,7 +322,6 @@ describe("inspectWorkflows", () => {
       hosted: ["ubuntu-latest"],
     });
     expect(report.hosted.map((t) => t.job)).toEqual(["b"]);
-    expect(report.fallbackFiles).toEqual([".github/workflows/ci.yml"]);
     expect(report.legacyProbe).toBe(false);
   });
 

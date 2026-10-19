@@ -405,15 +405,16 @@ always has. **No self-hosted runner is needed for this to work.**
 [\`gh-runner\`](https://www.npmjs.com/package/@singerbj/gh-runner) sets the variable, from outside
 Actions. While it's running it watches this repo's runs. When GitHub refuses to start a job for
 billing reasons — no minutes left, a spending limit, a failed payment — it sets the variable for
-each label it serves, such as \`${runnerVariable(osLabel("linux"))}=${osLabel("linux")}\`, and re-runs the refused runs
-so they land on it. It clears the variables when it stops, when a hosted job succeeds again, or
-when a new month resets the included minutes.
+each label it serves, such as \`${runnerVariable(osLabel("linux"))}=${osLabel("linux")}\`, so new jobs
+land on it. Runs that were already refused stay failed; re-run them yourself if you want them. It
+clears the variables when it stops, when a hosted job succeeds again, or when a new month resets the
+included minutes.
 
 ## Before you merge
 
 - Setting a variable needs admin on the repo — the same rights registering a runner needs.
 - Out of minutes with no \`gh-runner\` running, jobs fail the way they do today; there's nowhere
-  for them to run. Starting \`gh-runner\` re-runs the ones refused in the last day.
+  for them to run. Starting \`gh-runner\` moves new jobs to it; it doesn't re-run refused ones.
 - A runner killed too hard to clean up (\`kill -9\`, a power cut) can leave a variable set. Jobs
   then wait for it rather than using a GitHub-hosted runner. Deleting the variable is always safe.
 

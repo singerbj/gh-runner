@@ -415,19 +415,6 @@ export class GhClient {
     }
   }
 
-  /**
-   * Re-runs the failed jobs of a workflow run. Best effort: a run already
-   * re-running, or too old to re-run, is simply left alone.
-   */
-  async rerunFailedJobs(repo: string, runId: number): Promise<boolean> {
-    try {
-      await this.api(`repos/${repo}/actions/runs/${runId}/rerun-failed-jobs`, { method: "POST" });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   /** Best effort — a variable only ever holds a runner label. */
   async deleteVariable(repo: string, name: string): Promise<boolean> {
     try {

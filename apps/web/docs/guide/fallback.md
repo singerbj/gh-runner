@@ -4,10 +4,9 @@ After [setup](./setup), your jobs stay on GitHub-hosted runners. They move to yo
 
 ## How it works
 
-While `gh-runner` is running, it watches the repo's runs. When GitHub refuses a job for billing reasons, it:
+While `gh-runner` is running, it watches the repo's runs. When GitHub refuses a job for billing reasons, it sets `GH_RUNNER_LINUX=gh-runner-linux` (one variable per label it serves), so new jobs resolve to this machine.
 
-1. Sets `GH_RUNNER_LINUX=gh-runner-linux` (one variable per label it serves), so new jobs resolve to this machine.
-2. Re-runs refused runs from the last 24 hours. Runs from forks are never re-run.
+It only listens for new jobs. Runs GitHub already refused stay failed; re-run them yourself if you want them.
 
 It deletes the variables again when:
 
@@ -17,11 +16,11 @@ It deletes the variables again when:
 
 ## What to expect
 
-| Minutes left? | `gh-runner` running? | Jobs run on                            |
-| ------------- | -------------------- | -------------------------------------- |
-| yes           | either               | GitHub-hosted, as before               |
-| no            | yes                  | your machine, after at most one re-run |
-| no            | no                   | nowhere until you start `gh-runner`    |
+| Minutes left? | `gh-runner` running? | Jobs run on                                 |
+| ------------- | -------------------- | ------------------------------------------- |
+| yes           | either               | GitHub-hosted, as before                    |
+| no            | yes                  | your machine, after at most one refused run |
+| no            | no                   | nowhere until you start `gh-runner`         |
 
 ## Recovering from a hard kill
 

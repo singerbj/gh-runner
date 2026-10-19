@@ -36,22 +36,12 @@ const FAILED_RUNS_PER_CHECK = 30;
 /** How many successful runs after a refusal to check for a hosted job that got through. */
 const RECOVERY_RUNS = 10;
 
-/**
- * Refused runs older than this aren't re-run. A day covers a runner that was
- * started the morning after, without resurrecting last week's CI for branches
- * nobody is looking at any more.
- */
-export const RERUN_WINDOW_MS = 24 * 60 * 60 * 1000;
-
 interface WorkflowRun {
   id: number;
   run_attempt?: number;
   status?: string | null;
   conclusion?: string | null;
   created_at?: string;
-  /** `.github/workflows/ci.yml`, sometimes with `@ref` on the end. */
-  path?: string;
-  head_repository?: { full_name?: string } | null;
 }
 
 interface WorkflowJob {
@@ -76,7 +66,7 @@ interface RunVerdict {
 }
 
 export type HostedStatus =
-  | { state: "blocked"; since: number; refusedRuns: number[] }
+  | { state: "blocked"; since: number }
   | { state: "ok" }
   /** The API couldn't be read, so nothing should change. */
   | { state: "unknown"; reason: string };
@@ -85,7 +75,6 @@ export interface UsageCheckResult {
   status: HostedStatus;
   /** What the check did about it. */
   action: "set" | "cleared" | "none";
-  rerun: number[];
 }
 
 export interface HostedUsageWatcherOptions {
@@ -96,12 +85,6 @@ export interface HostedUsageWatcherOptions {
   logger: Logger;
   /** Labels this session serves; one variable is set for each while blocked. */
   labels: readonly string[];
-  /**
-   * Workflow files whose jobs read a runner variable. A refused run of any other
-   * workflow would only be refused again, so it isn't re-run. Unset means every
-   * workflow.
-   */
-  workflowFiles?: readonly string[];
   /** Injected in tests; defaults to `Date.now`. */
   now?: () => number;
   intervalMs?: number;
@@ -146,13 +129,13 @@ function ranOnHosted(job: WorkflowJob, selfHostedLabels: ReadonlySet<string>): b
  * runner variables for this session's labels while they can't.
  *
  * - A job refused for billing reasons, with no hosted job succeeding after it,
- *   means blocked: the variables are set, and the refused runs from the last
- *   day are re-run so they land here instead.
+ *   means blocked: the variables are set, so new jobs land here instead.
+ *   Refused runs are left alone — re-running them is a decision for a person.
  * - A hosted job succeeding after that means unblocked.
  * - So does a new month with no refusal in it yet: included minutes reset on
  *   the first. If hosted runners are still unavailable — a spending limit, a
  *   failed payment — the next job is refused, and the variables go straight
- *   back up with that run re-run.
+ *   back up.
  *
  * The variables mean "a gh-runner for this label is up, and hosted runners
  * aren't", so they come down when the session ends. With nobody running
@@ -172,12 +155,10 @@ export class HostedUsageWatcher {
   private readonly selfHostedLabels: Set<string>;
   /** Verdicts by `runId:attempt` — a completed attempt is immutable, so each is read once. */
   private readonly verdicts = new Map<string, RunVerdict>();
-  /** Runs this session has already asked GitHub to re-run. */
-  private readonly rerun = new Set<number>();
   /**
    * The latest refusal this session has seen. Remembered, because a refused run
-   * that is re-run and succeeds stops looking refused — and is still the reason
-   * the variables are up.
+   * that someone re-runs and that succeeds stops looking refused — and is still
+   * the reason the variables are up.
    */
   private refusedAt: number | null = null;
   /** True while this session holds the variables up. */
@@ -260,14 +241,14 @@ export class HostedUsageWatcher {
       // them down. A sibling that still needs one puts it back on its next check.
       if (first && !this.holding) {
         await this.release(gh);
-        return { status, action: "none", rerun: [] };
+        return { status, action: "none" };
       }
-      if (!this.holding) return { status, action: "none", rerun: [] };
+      if (!this.holding) return { status, action: "none" };
       await this.release(gh);
       line(
         `${green("✓")} GitHub-hosted runners are available to ${repo} again ${dim(`— cleared ${names}`)}`,
       );
-      return { status, action: "cleared", rerun: [] };
+      return { status, action: "cleared" };
     }
 
     // Re-asserted every time: a sibling session serving the same label takes
@@ -277,31 +258,17 @@ export class HostedUsageWatcher {
       if (await gh.setVariable(repo, name, label)) set += 1;
     }
     if (set === 0) {
-      // Nothing is pointing jobs here, so a re-run would only be refused again.
       return this.unknown(`couldn't set ${names} — that needs admin on ${repo}`);
     }
 
-    const action = this.holding ? "none" : "set";
-    if (!this.holding) {
-      this.holding = true;
-      line(
-        `${yellow("!")} GitHub won't start hosted jobs in ${repo} ${dim(
-          `(no minutes left, or a billing limit) — set ${names}, so they run here`,
-        )}`,
-      );
-    }
-
-    const rerun: number[] = [];
-    for (const runId of status.refusedRuns) {
-      if (this.rerun.has(runId)) continue;
-      this.rerun.add(runId);
-      if (await gh.rerunFailedJobs(repo, runId)) {
-        rerun.push(runId);
-        line(`${green("↻")} re-running refused run ${runId} ${dim("here")}`);
-      }
-    }
-
-    return { status, action, rerun };
+    if (this.holding) return { status, action: "none" };
+    this.holding = true;
+    line(
+      `${yellow("!")} GitHub won't start hosted jobs in ${repo} ${dim(
+        `(no minutes left, or a billing limit) — set ${names}, so new jobs run here`,
+      )}`,
+    );
+    return { status, action: "set" };
   }
 
   private async release(gh: GhClient): Promise<void> {
@@ -323,7 +290,6 @@ export class HostedUsageWatcher {
     if (failed === null) return { state: "unknown", reason: "couldn't list workflow runs" };
 
     let lastRefusal = this.refusedAt !== null && this.refusedAt >= since ? this.refusedAt : null;
-    const refused: Array<{ run: WorkflowRun; at: number }> = [];
 
     for (const run of failed) {
       if (run.status !== "completed") continue;
@@ -331,7 +297,6 @@ export class HostedUsageWatcher {
       if (verdict === null) return { state: "unknown", reason: `couldn't read run ${run.id}` };
       if (verdict.refusedAt === null) continue;
       lastRefusal = latest(lastRefusal, verdict.refusedAt);
-      refused.push({ run, at: verdict.refusedAt });
     }
 
     if (lastRefusal === null) {
@@ -352,22 +317,7 @@ export class HostedUsageWatcher {
     }
 
     this.refusedAt = lastRefusal;
-    const cutoff = Math.max(now - RERUN_WINDOW_MS, since);
-    const files = this.options.workflowFiles;
-    return {
-      state: "blocked",
-      since: lastRefusal,
-      refusedRuns: refused
-        .filter(({ run, at }) => {
-          // A run from a fork is someone else's code. Re-running it here is a
-          // decision for a person, not for a heartbeat.
-          const ours =
-            run.head_repository?.full_name?.toLowerCase() === this.options.repo.toLowerCase();
-          const moves = !files || files.includes((run.path ?? "").split("@")[0] ?? "");
-          return ours && moves && at >= cutoff;
-        })
-        .map(({ run }) => run.id),
-    };
+    return { state: "blocked", since: lastRefusal };
   }
 
   private async listRuns(
@@ -433,6 +383,6 @@ export class HostedUsageWatcher {
         `    ${dim(`! couldn't check whether GitHub-hosted runners are available (${reason}) — changing nothing`)}\n`,
       );
     }
-    return { status: { state: "unknown", reason }, action: "none", rerun: [] };
+    return { status: { state: "unknown", reason }, action: "none" };
   }
 }

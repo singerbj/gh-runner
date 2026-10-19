@@ -536,7 +536,6 @@ describe("the workflow audit", () => {
     );
 
     expect(workflows?.hosted).toEqual([]);
-    expect(workflows?.fallbackFiles).toEqual([".github/workflows/ci.yml"]);
     // Nothing to fix, so nothing offered — and the watcher is on.
     expect(asked).toBe(0);
     const output = lines.join("");

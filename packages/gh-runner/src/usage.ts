@@ -102,6 +102,13 @@ export interface HostedUsageWatcherOptions {
    * workflow.
    */
   workflowFiles?: readonly string[];
+  /**
+   * This session's own runner names. On the way out a variable stays up while
+   * a runner that isn't one of these — another machine, another session — is
+   * online with its label, so stopping one of several doesn't send jobs back to
+   * GitHub-hosted runners that can't start them.
+   */
+  runnerNames?: readonly string[];
   /** Injected in tests; defaults to `Date.now`. */
   now?: () => number;
   intervalMs?: number;
@@ -228,7 +235,9 @@ export class HostedUsageWatcher {
     this.timer?.close();
     this.timer = undefined;
     await this.running?.catch(() => {});
-    if (this.holding) await this.release(this.options.cleanupGh ?? this.options.gh);
+    if (this.holding) {
+      await this.release(this.options.cleanupGh ?? this.options.gh, { keepServed: true });
+    }
   }
 
   /** One pass. Overlapping calls share the pass already in flight. */
@@ -304,11 +313,34 @@ export class HostedUsageWatcher {
     return { status, action, rerun };
   }
 
-  private async release(gh: GhClient): Promise<void> {
+  private async release(gh: GhClient, { keepServed = false } = {}): Promise<void> {
     this.holding = false;
-    for (const name of this.variables.keys()) {
+    const served = keepServed ? await this.servedElsewhere(gh) : new Set<string>();
+    for (const [name, label] of this.variables) {
+      if (served.has(label.toLowerCase())) continue;
       await gh.deleteVariable(this.options.repo, name);
     }
+  }
+
+  /** Labels another online runner still serves. Empty when that can't be told. */
+  private async servedElsewhere(gh: GhClient): Promise<Set<string>> {
+    const own = new Set((this.options.runnerNames ?? []).map((name) => name.toLowerCase()));
+    const runners = (await gh.onlineRunners(this.options.repo)) ?? [];
+    const served = new Set<string>();
+    for (const runner of runners) {
+      if (own.has(runner.name.toLowerCase())) continue;
+      for (const label of runner.labels) served.add(label.toLowerCase());
+    }
+    if (served.size > 0) {
+      const kept = [...this.variables].filter(([, label]) => served.has(label.toLowerCase()));
+      if (kept.length > 0) {
+        const { dim } = this.options.logger.styles;
+        this.options.logger.raw(
+          `    ${dim(`left ${kept.map(([name]) => name).join(", ")} set — another runner is still online for ${kept.length === 1 ? "it" : "them"}`)}\n`,
+        );
+      }
+    }
+    return served;
   }
 
   /**

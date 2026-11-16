@@ -2,6 +2,7 @@
 
 ```sh
 gh-runner [platforms...] [options]
+gh-runner --all-repos [platforms...] [options]
 gh-runner setup [options]
 ```
 
@@ -29,6 +30,16 @@ Pass any of `mac`, `linux`, `windows` as arguments, or use `--os mac,linux`. Wit
 | `--allow-public`         | Allow repos not confirmed private (**dangerous**) |
 | `--runner-version X.Y.Z` | Pin the runner version (default: latest)          |
 | `--cache-dir PATH`       | Where to cache runner downloads                   |
+
+## Serving several repos
+
+See [Every repo at once](/guide/all-repos).
+
+| Option            | Description                                                             |
+| ----------------- | ----------------------------------------------------------------------- |
+| `--all-repos`     | Serve every private repo you own whose workflows send jobs to gh-runner |
+| `--owner a,b`     | Scan these users or organisations instead (implies `--all-repos`)       |
+| `--repos a/b,c/d` | Serve exactly these repos, with or without `--all-repos`                |
 
 ## Docker options
 

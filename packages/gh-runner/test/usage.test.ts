@@ -94,6 +94,40 @@ describe("HostedUsageWatcher", () => {
     expect((await watcherFor(github).check()).status.state).toBe("blocked");
   });
 
+  it("leaves a variable up on the way out while another machine still serves its label", async () => {
+    const github = new MockGitHub();
+    github.hostedAvailable = false;
+    github.push(WORKFLOW);
+    const watcher = watcherFor(github);
+
+    expect((await watcher.check()).action).toBe("set");
+    // Another gh-runner, on another machine, serving Linux but not plain gh-runner.
+    github.online = [["self-hosted", "Linux", "X64", "gh-runner-linux"]];
+    await watcher.stop();
+
+    expect([...github.variables.keys()]).toEqual(["GH_RUNNER_LINUX"]);
+  });
+
+  it("doesn't count its own runners as another machine", async () => {
+    const github = new MockGitHub();
+    github.hostedAvailable = false;
+    github.push(WORKFLOW);
+    github.online = [["self-hosted", "gh-runner", "gh-runner-linux"]];
+    const watcher = new HostedUsageWatcher({
+      repo: github.repo,
+      gh: new GhClient({ runner: github.commandRunner() }),
+      logger: silentLogger,
+      labels: ["gh-runner", "gh-runner-linux"],
+      runnerNames: ["mock-runner-1"],
+      now: () => github.now,
+      schedule: () => ({ close: () => {} }),
+    });
+
+    await watcher.check();
+    await watcher.stop();
+    expect([...github.variables.keys()]).toEqual([]);
+  });
+
   it("clears stale copies of its own variables on its first check — never another label's", async () => {
     const github = new MockGitHub();
     github.variables.set("GH_RUNNER_MAC", "gh-runner-mac");

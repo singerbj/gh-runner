@@ -47,6 +47,30 @@ describe("parseArgs", () => {
     },
   );
 
+  it("serves every repo with --all-repos, and an owner implies it", () => {
+    expect(parseArgs(["--all-repos", "linux"]).options).toMatchObject({
+      allRepos: true,
+      owners: [],
+      platforms: ["linux"],
+      fixWorkflows: "never",
+    });
+    expect(parseArgs(["--owner", "me,my-org"]).options).toMatchObject({
+      allRepos: true,
+      owners: ["me", "my-org"],
+    });
+    expect(parseArgs(["--repos", "me/a, me/b"]).options).toMatchObject({
+      allRepos: false,
+      repos: ["me/a", "me/b"],
+    });
+  });
+
+  it("refuses what can't mean anything across several repos", () => {
+    expect(() => parseArgs(["--all-repos", "--repo", "me/a"])).toThrow(/--repos/);
+    expect(() => parseArgs(["--all-repos", "--fix-workflows"])).toThrow(/setup/);
+    expect(() => parseArgs(["--repos", "not-a-slug"])).toThrow(CliError);
+    expect(() => parseArgs(["--owner", "bad/owner"])).toThrow(/--owner/);
+  });
+
   it("has nothing to warn about normally", () => {
     expect(parseArgs(["--fix-workflows"]).warnings).toEqual([]);
   });

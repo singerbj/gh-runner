@@ -92,7 +92,10 @@ export default defineConfig({
       },
       {
         text: "Deploy",
-        items: [{ text: "Always on with Docker", link: "/guide/docker" }],
+        items: [
+          { text: "Every repo at once", link: "/guide/all-repos" },
+          { text: "Always on with Docker", link: "/guide/docker" },
+        ],
       },
       {
         text: "Reference",

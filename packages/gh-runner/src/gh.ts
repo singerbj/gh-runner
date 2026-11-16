@@ -10,6 +10,15 @@ import { assertRunnerVersion } from "./platform.js";
  */
 export type RepoVisibility = "PUBLIC" | "PRIVATE" | "INTERNAL" | "UNKNOWN";
 
+/** One repo from {@link GhClient.listRepos}. */
+export interface OwnedRepo {
+  /** OWNER/NAME. */
+  fullName: string;
+  visibility: RepoVisibility;
+  /** When anything was last pushed, as GitHub reports it. Changes with every push. */
+  pushedAt: string;
+}
+
 /**
  * Digs the SHA-256 of one release asset out of an `actions/runner` release
  * body. The release notes carry `<!-- BEGIN SHA linux-x64 -->…` markers; a line
@@ -435,6 +444,86 @@ export class GhClient {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /** The login `gh` is authenticated as. */
+  async login(): Promise<string> {
+    try {
+      const login = await this.api("user", { jq: ".login" });
+      if (login) return login;
+    } catch {
+      // fall through
+    }
+    throw new CliError("couldn't tell which GitHub account gh is logged in as");
+  }
+
+  /**
+   * Every repo `owner` has that this token can see, archived ones left out —
+   * they can't run workflows. With no owner, the repos the authenticated
+   * account owns. An owner that isn't you is tried as an organisation first,
+   * where private repos are listed, then as a user, where only public ones are.
+   */
+  async listRepos(owner?: string): Promise<OwnedRepo[]> {
+    const jq =
+      '.[] | select(.archived | not) | [.full_name, .visibility, (.pushed_at // "")] | @tsv';
+    const self = owner === undefined ? undefined : await this.login().catch(() => undefined);
+    const paths =
+      owner === undefined || owner.toLowerCase() === self?.toLowerCase()
+        ? ["user/repos?affiliation=owner&per_page=100"]
+        : [
+            `orgs/${encodeURIComponent(owner)}/repos?type=all&per_page=100`,
+            `users/${encodeURIComponent(owner)}/repos?type=owner&per_page=100`,
+          ];
+
+    let lastError: unknown;
+    for (const path of paths) {
+      const args = ["api", "--paginate", path, "--jq", jq];
+      try {
+        const out = await execCapture(this.runner, this.bin, args, this.execOptions);
+        return out
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => {
+            const [fullName = "", visibility = "", pushedAt = ""] = line.split("\t");
+            const upper = visibility.toUpperCase();
+            return {
+              fullName,
+              visibility:
+                upper === "PUBLIC" || upper === "PRIVATE" || upper === "INTERNAL"
+                  ? upper
+                  : "UNKNOWN",
+              pushedAt,
+            } satisfies OwnedRepo;
+          })
+          .filter((repo) => repo.fullName.includes("/"));
+      } catch (error) {
+        lastError = error;
+        if (!isNotFound(error)) break;
+      }
+    }
+    const detail = lastError instanceof Error ? ` (${lastError.message.split("\n")[0]})` : "";
+    throw new CliError(`couldn't list the repos of ${owner ?? "your account"}${detail}`);
+  }
+
+  /**
+   * The repo's self-hosted runners that are online right now, or null when they
+   * couldn't be listed. Used to tell whether another machine is still serving a
+   * label before taking its variable down.
+   */
+  async onlineRunners(repo: string): Promise<Array<{ name: string; labels: string[] }> | null> {
+    try {
+      const body = JSON.parse(await this.api(`repos/${repo}/actions/runners?per_page=100`)) as {
+        runners?: Array<{ name?: string; status?: string; labels?: Array<{ name?: string }> }>;
+      };
+      return (body.runners ?? [])
+        .filter((runner) => runner.status === "online" && typeof runner.name === "string")
+        .map((runner) => ({
+          name: runner.name as string,
+          labels: (runner.labels ?? []).flatMap((label) => (label.name ? [label.name] : [])),
+        }));
+    } catch {
+      return null;
     }
   }
 

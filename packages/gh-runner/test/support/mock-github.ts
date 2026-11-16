@@ -328,6 +328,16 @@ export class MockGitHub {
       }
     }
 
+    if (rest === "/actions/runners" && method === "GET") {
+      const runners = this.online.map((labels, index) => ({
+        id: index + 1,
+        name: `mock-runner-${index + 1}`,
+        status: "online",
+        labels: labels.map((name) => ({ name })),
+      }));
+      return ok({ total_count: runners.length, runners });
+    }
+
     if (rest === "/actions/variables" && method === "POST") {
       const name = fields["name"] ?? "";
       if (this.variables.has(name)) return { status: 409, body: { message: "Already exists" } };

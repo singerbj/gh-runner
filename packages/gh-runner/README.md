@@ -1,14 +1,14 @@
 # gh-runner
 
-Temporarily register the machine you're sitting at as a GitHub Actions **self-hosted runner** for the repo you're standing in — then let it clean up after itself.
+Temporarily register the machine you're sitting at as a GitHub Actions **self-hosted runner** for every repo of yours that uses it — then let it clean up after itself.
 
 ```bash
 cd ~/code/my-repo
-npx @singerbj/gh-runner setup   # once: jobs fall back to gh-runner when hosted runners can't start
-npx @singerbj/gh-runner         # whenever you want this machine to take jobs
+npx @singerbj/gh-runner setup   # once per repo: jobs fall back to gh-runner when hosted runners can't start
+npx @singerbj/gh-runner         # whenever you want this machine to take jobs, for every set-up repo
 ```
 
-It checks your workflows actually target a self-hosted runner, registers one under the `gh-runner` label, and **stays online for as long as the command runs** — taking job after job. Stop it with Ctrl+C and it deregisters and deletes everything it downloaded.
+It finds every private repo you own whose workflows target gh-runner, registers a runner in each under the `gh-runner` label, and **stays online for as long as the command runs** — taking job after job. `--here` serves just the repo you're standing in, and checks its workflows first. Stop it with Ctrl+C and it deregisters and deletes everything it downloaded.
 
 ## Why
 
@@ -30,13 +30,14 @@ Either way the command is `gh-runner` — the scope is only how npm finds the pa
 
 ```bash
 gh-runner setup                 # open the workflow PR, register nothing (--dry-run to preview)
-gh-runner                       # pick platforms from a menu, stay online until Ctrl+C
+gh-runner                       # every repo that uses it; pick platforms, stay online until Ctrl+C
 gh-runner linux                 # or just name them
 gh-runner mac linux             # one runner each, in parallel
 gh-runner --all                 # every platform this machine can serve
 gh-runner --once                # take a single job, then deregister and exit
 gh-runner --labels gpu,cuda-12  # extra labels on top of the defaults
-gh-runner --repo owner/name     # target a repo other than cwd
+gh-runner --here                # just the repo in this directory
+gh-runner --repo owner/name     # just that repo
 ```
 
 ## Choosing platforms
@@ -277,10 +278,10 @@ Only GitHub-hosted jobs get repointed. A job already asking for `self-hosted` wi
 | ------------------------ | ---------------------------------------------------------------------- |
 | `--once`, `--ephemeral`  | Take one job, then deregister (default: stay online)                   |
 | `--labels a,b,c`         | Extra labels on top of the `gh-runner` set and the host label          |
-| `--repo OWNER/NAME`      | Target a specific repo instead of detecting from cwd                   |
-| `--all-repos`            | Serve every private repo you own whose workflows use gh-runner         |
-| `--owner a,b`            | Scan these users or orgs instead (implies `--all-repos`)               |
-| `--repos a/b,c/d`        | Serve exactly these repos                                              |
+| `--here`                 | Serve only the repo in this directory (default: every repo)            |
+| `--repo OWNER/NAME`      | Serve only this repo                                                   |
+| `--owner a,b`            | Scan these users or orgs instead of your account                       |
+| `--repos a/b,c/d`        | Serve exactly these repos (add `--all-repos` to scan as well)          |
 | `--name NAME`            | Runner name to register (default: `<host>-<pid>`)                      |
 | `--allow-public`         | Register even if the repo isn't confirmed private (**dangerous**)      |
 | `--all`                  | Serve every platform this machine can                                  |
@@ -301,13 +302,13 @@ Only GitHub-hosted jobs get repointed. A job already asking for `self-hosted` wi
 ## Every repo at once
 
 ```bash
-npx @singerbj/gh-runner --all-repos          # every private repo of yours that uses gh-runner
-npx @singerbj/gh-runner --all-repos mac linux
-npx @singerbj/gh-runner --owner my-org       # an organisation's (implies --all-repos)
+npx @singerbj/gh-runner                      # every private repo of yours that uses gh-runner
+npx @singerbj/gh-runner mac linux
+npx @singerbj/gh-runner --owner my-org       # an organisation's
 npx @singerbj/gh-runner --repos me/api,me/web
 ```
 
-`--all-repos` lists the repos you own, reads each one's workflows on the default branch, and registers a runner for every private repo with a job that targets gh-runner: `runs-on: [self-hosted, gh-runner…]` or the `${{ vars.GH_RUNNER_* || '…' }}` fallback `setup` writes. Hosted-only repos, a bare `[self-hosted]`, and labels this machine can't serve are left alone, and public repos are skipped unless `--allow-public`. The platform menu is asked once, not per repo.
+This is the default. It lists the repos you own, reads each one's workflows on the default branch, and registers a runner for every private repo with a job that targets gh-runner: `runs-on: [self-hosted, gh-runner…]` or the `${{ vars.GH_RUNNER_* || '…' }}` fallback `setup` writes. Hosted-only repos, a bare `[self-hosted]`, and labels this machine can't serve are left alone, and public repos are skipped unless `--allow-public`. The platform menu is asked once, not per repo.
 
 It rescans every 10 minutes, so a repo you run `gh-runner setup` in later is picked up without a restart, and one that stops targeting gh-runner has its runner taken down. A repo nothing was pushed to since the last scan isn't read again. A repo that fails (no admin rights, say) is retried with a growing back-off, without disturbing the others. Each repo's output is prefixed with `[owner/name]`.
 
@@ -319,7 +320,7 @@ Personal accounts can't register account-wide runners, so this is one runner per
 
 `gh-runner` normally lives as long as the terminal it runs in. For a machine that should always be ready to take jobs (a home lab box, a VPS, a [Coolify](https://coolify.io) server), every release publishes an image, `ghcr.io/singerbj/gh-runner`, for `linux/amd64` and `linux/arm64`. `gh-runner` is the container's main process, so the runner is online whenever the container is up, comes back with it after a crash or reboot, and deregisters itself when the container stops.
 
-With only `GH_TOKEN` set it runs `--all-repos`: every private repo the token can see that uses gh-runner, picked up as you set them up. Set `GH_RUNNER_REPO` to serve one repo instead. Run the same container on several servers and they share the jobs.
+With only `GH_TOKEN` set it serves every private repo the token can see that uses gh-runner, picked up as you set them up. Set `GH_RUNNER_REPO` to serve one repo instead. Run the same container on several servers and they share the jobs.
 
 ```bash
 docker run -d --name gh-runner --restart unless-stopped --stop-timeout 60 \
@@ -350,7 +351,7 @@ On **Coolify**: add a **Docker Compose Empty** resource, paste [`deploy/docker-c
 
 Anything passed as the container's command is added to `gh-runner`'s arguments, e.g. `command: ["--runner-version", "2.334.0"]`.
 
-The image is GitHub's runner image (`ghcr.io/actions/actions-runner`) plus Node LTS, `gh`, `tini` and `gh-runner`, running `gh-runner linux --all-repos` (or `--repo …`) as GitHub's unprivileged `runner` user. `gh-runner linux` runs the same image when it uses Docker, so a job that works on one works on the other. Its [`Dockerfile`](deploy/Dockerfile) and [`entrypoint.sh`](deploy/entrypoint.sh) are next to the compose file. Things to know:
+The image is GitHub's runner image (`ghcr.io/actions/actions-runner`) plus Node LTS, `gh`, `tini` and `gh-runner`, running `gh-runner linux` (or `--repo …`) as GitHub's unprivileged `runner` user. `gh-runner linux` runs the same image when it uses Docker, so a job that works on one works on the other. Its [`Dockerfile`](deploy/Dockerfile) and [`entrypoint.sh`](deploy/entrypoint.sh) are next to the compose file. Things to know:
 
 - **Linux only.** It's a Linux container, so it serves `gh-runner-linux` (and `gh-runner`).
 - **What a job gets.** Ubuntu with `git`, `curl`, `jq`, Node LTS, npm and `gh`, as a user with passwordless `sudo`, so `apt-get install` and `npx playwright install --with-deps` work. `sudo` is root inside the container only: there's no Docker socket and nothing from the host. Anything else a job needs, it installs, the way `actions/setup-node` and friends already do.
@@ -426,7 +427,7 @@ The workflow pieces are exported on their own too: `inspectWorkflows`, `parseRun
 ## How it works
 
 1. Checks `gh` is installed and authenticated.
-2. Resolves the repo from cwd (or `--repo`) and refuses any it can't confirm is private.
+2. Finds the repos to serve — every private repo whose workflows target gh-runner, or the one from `--here` / `--repo` — and refuses any it can't confirm is private.
 3. Works out which platforms this machine can serve — probing Docker only if something other than the host OS is in play — then takes them from the arguments, the menu, or the single possible answer.
 4. Audits `.github/workflows` for a `runs-on` that matches any of the chosen runners, and offers the PR if none does.
 5. Starts one runner per platform, in parallel:

@@ -1,23 +1,17 @@
 # gh-runner
 
-Monorepo for **[`@singerbj/gh-runner`](https://www.npmjs.com/package/@singerbj/gh-runner)** — a CLI that temporarily registers the machine you're sitting at as a GitHub Actions self-hosted runner for the repo you're standing in. It stays online for as long as the command runs, then deregisters and deletes itself.
+Monorepo for **[`@singerbj/gh-runner`](https://www.npmjs.com/package/@singerbj/gh-runner)** — a CLI that temporarily registers the machine you're sitting at as a GitHub Actions self-hosted runner for every repo of yours that uses it. It stays online for as long as the command runs, then deregisters and deletes itself. Run it on as many machines as you like: GitHub hands each job to whichever one is idle.
 
 ```bash
-cd ~/code/my-repo
-npx @singerbj/gh-runner              # pick platforms from a menu
+npx @singerbj/gh-runner              # every repo that uses gh-runner; pick platforms from a menu
 npx @singerbj/gh-runner mac linux    # or name them — one runner each, in parallel
 npx @singerbj/gh-runner --all        # everything this machine can serve
-```
-
-Or serve every repo of yours that uses it, from one command — and run that on as many machines as you like; GitHub hands each job to whichever one is idle:
-
-```bash
-npx @singerbj/gh-runner --all-repos
+cd ~/code/my-repo && npx @singerbj/gh-runner --here   # just this repo
 ```
 
 Linux can come from a container, so any machine can serve it; macOS and Windows have to be native, so asking a Mac for a Windows runner is an error rather than a silent no-op.
 
-It also audits `.github/workflows` first, so you find out that nothing targets `runs-on: [self-hosted, gh-runner]` _before_ you sit waiting for a job that never arrives — and it offers to open a PR that fixes the YAML, prepared in a throwaway git worktree so your working tree is never touched.
+With `--here` it also audits that repo's `.github/workflows` first, so you find out that nothing targets `runs-on: [self-hosted, gh-runner]` _before_ you sit waiting for a job that never arrives — and it offers to open a PR that fixes the YAML, prepared in a throwaway git worktree so your working tree is never touched.
 
 That PR doesn't hand your CI to a laptop that might be closed. Every job stays on the GitHub-hosted runner it already had, and moves to your machine **only while the repo can't start hosted jobs** — out of Actions minutes, over a spending limit, a failed payment:
 

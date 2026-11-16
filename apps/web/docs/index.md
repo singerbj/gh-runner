@@ -4,7 +4,7 @@ layout: home
 hero:
   name: gh-runner
   text: Your machine as a GitHub Actions runner
-  tagline: One command. Gone when you stop it.
+  tagline: One command, every repo, any number of machines. Gone when you stop it.
   actions:
     - theme: brand
       text: Get started

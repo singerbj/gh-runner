@@ -1,6 +1,6 @@
 # Getting started
 
-`gh-runner` registers the machine you're on as a self-hosted GitHub Actions runner for the repo you're in. It takes jobs while the command runs, then deregisters and cleans up.
+`gh-runner` registers the machine you're on as a self-hosted GitHub Actions runner for [every repo of yours](./all-repos) that uses it. It takes jobs while the command runs, then deregisters and cleans up.
 
 ## Requirements
 
@@ -14,9 +14,11 @@
 No install needed:
 
 ```sh
-cd ~/code/my-repo
-npx @singerbj/gh-runner@latest
+npx @singerbj/gh-runner@latest           # every repo that uses gh-runner
+cd ~/code/my-repo && npx @singerbj/gh-runner@latest --here   # just this one
 ```
+
+A repo uses gh-runner once a workflow targets it — run [`gh-runner setup`](./setup) in it, or write the `runs-on` below yourself.
 
 Or install it globally and use `gh-runner`:
 
@@ -54,12 +56,13 @@ See [Platforms & labels](./platforms) to pin a job to one OS.
 
 ```sh
 gh-runner setup                 # open a PR so jobs can fall back to gh-runner
-gh-runner                       # pick platforms from a menu
+gh-runner                       # every repo; pick platforms from a menu
 gh-runner mac linux             # one runner each, in parallel
 gh-runner --all                 # every platform this machine can serve
 gh-runner --once                # take one job, then exit
 gh-runner --labels gpu          # add extra labels
-gh-runner --repo owner/name     # target a repo other than cwd
+gh-runner --here                # just the repo in this directory
+gh-runner --repo owner/name     # just that repo
 ```
 
 All flags are in the [CLI reference](/reference/cli).

@@ -1,8 +1,8 @@
 # CLI
 
 ```sh
-gh-runner [platforms...] [options]
-gh-runner --all-repos [platforms...] [options]
+gh-runner [platforms...] [options]          # every repo that uses gh-runner
+gh-runner --here [platforms...] [options]   # just the repo in this directory
 gh-runner setup [options]
 ```
 
@@ -10,7 +10,7 @@ gh-runner setup [options]
 
 | Command           | Description                                                            |
 | ----------------- | ---------------------------------------------------------------------- |
-| `gh-runner`       | Register runners and take jobs until stopped                           |
+| `gh-runner`       | Register runners for every repo that uses gh-runner, until stopped     |
 | `gh-runner setup` | Open a PR so jobs [fall back](/guide/fallback) to gh-runner, then exit |
 
 ## Platforms
@@ -23,7 +23,6 @@ Pass any of `mac`, `linux`, `windows` as arguments, or use `--os mac,linux`. Wit
 | ------------------------ | ------------------------------------------------- |
 | `--once`, `--ephemeral`  | Take one job, then deregister                     |
 | `--labels a,b`           | Extra labels                                      |
-| `--repo OWNER/NAME`      | Target repo (default: detected from cwd)          |
 | `--name NAME`            | Runner name (default: `<host>-<pid>`)             |
 | `--all`                  | Serve every platform this machine can             |
 | `--os a,b`, `--platform` | Platforms to serve                                |
@@ -31,15 +30,16 @@ Pass any of `mac`, `linux`, `windows` as arguments, or use `--os mac,linux`. Wit
 | `--runner-version X.Y.Z` | Pin the runner version (default: latest)          |
 | `--cache-dir PATH`       | Where to cache runner downloads                   |
 
-## Serving several repos
+## Choosing repos
 
-See [Every repo at once](/guide/all-repos).
+By default every private repo you own whose workflows send jobs to gh-runner is served. See [Every repo at once](/guide/all-repos).
 
-| Option            | Description                                                             |
-| ----------------- | ----------------------------------------------------------------------- |
-| `--all-repos`     | Serve every private repo you own whose workflows send jobs to gh-runner |
-| `--owner a,b`     | Scan these users or organisations instead (implies `--all-repos`)       |
-| `--repos a/b,c/d` | Serve exactly these repos, with or without `--all-repos`                |
+| Option              | Description                                                   |
+| ------------------- | ------------------------------------------------------------- |
+| `--owner a,b`       | Scan these users or organisations instead of your account     |
+| `--repos a/b,c/d`   | Serve exactly these repos (add `--all-repos` to scan as well) |
+| `--here`            | Serve only the repo in this directory, auditing its workflows |
+| `--repo OWNER/NAME` | Serve only this repo                                          |
 
 ## Docker options
 
@@ -50,14 +50,14 @@ See [Every repo at once](/guide/all-repos).
 
 ## Workflow options
 
-| Option                | Description                              |
-| --------------------- | ---------------------------------------- |
-| `--dry-run`           | `setup` only: list changes, push nothing |
-| `--fix-workflows`     | Open the workflow PR without asking      |
-| `--no-fix-workflows`  | Never offer the workflow PR              |
-| `--fix-jobs a,b`      | Only rewrite these job ids               |
-| `--fix-label LABEL`   | Use one label for every rewritten job    |
-| `--no-workflow-check` | Skip the `runs-on` check                 |
+| Option                | Description                                            |
+| --------------------- | ------------------------------------------------------ |
+| `--dry-run`           | `setup` only: list changes, push nothing               |
+| `--fix-workflows`     | Open the workflow PR without asking (implies `--here`) |
+| `--no-fix-workflows`  | Never offer the workflow PR                            |
+| `--fix-jobs a,b`      | Only rewrite these job ids                             |
+| `--fix-label LABEL`   | Use one label for every rewritten job                  |
+| `--no-workflow-check` | Skip the `runs-on` check                               |
 
 ## Other
 

@@ -105,7 +105,7 @@ export async function ghRunnerFleet(
   const retryBaseMs = context.retryBaseMs ?? RETRY_BASE_MS;
 
   if (!options.allRepos && options.repos.length === 0) {
-    throw new CliError("nothing to serve — pass --all-repos, --owner, or --repos");
+    throw new CliError("nothing to serve — set allRepos, owners, or repos");
   }
 
   await gh.preflight();
@@ -302,7 +302,7 @@ export async function ghRunnerFleet(
       }
       if (result.serve.length === 0) {
         logger.raw(
-          `    ${dim(`nothing to serve yet — run \`gh-runner setup\` in a repo, and it is picked up within ${Math.round(rescanMs / 60_000)} min`)}\n`,
+          `    ${dim(`nothing to serve yet — run \`gh-runner setup\` in a repo and it is picked up within ${Math.round(rescanMs / 60_000)} min, or \`gh-runner --here\` to serve that repo now`)}\n`,
         );
       }
       return;

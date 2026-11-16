@@ -1,9 +1,9 @@
 # Every repo at once
 
-One command serves every repo of yours that uses gh-runner:
+By default, one command serves every repo of yours that uses gh-runner:
 
 ```sh
-npx @singerbj/gh-runner --all-repos
+npx @singerbj/gh-runner
 ```
 
 It lists the repos you own, reads each one's workflows on its default branch, and registers a runner for every **private** repo with a job that targets gh-runner — `runs-on: [self-hosted, gh-runner…]`, or the `vars.GH_RUNNER_*` [fallback](./fallback) that [setup](./setup) writes. Repos with only GitHub-hosted jobs, a bare `[self-hosted]` (your own runners), or labels this machine can't serve are left alone.
@@ -11,10 +11,11 @@ It lists the repos you own, reads each one's workflows on its default branch, an
 It rescans every 10 minutes, so a repo you run `gh-runner setup` in later is picked up without a restart, and one whose workflows stop targeting gh-runner has its runner taken down. A repo nothing was pushed to isn't read again.
 
 ```sh
-gh-runner --all-repos mac linux        # pick platforms as usual; asked once, not per repo
-gh-runner --owner my-org               # an organisation's repos (implies --all-repos)
+gh-runner mac linux                    # pick platforms as usual; asked once, not per repo
+gh-runner --owner my-org               # an organisation's repos
 gh-runner --owner me,my-org            # several owners
 gh-runner --repos me/api,me/web        # exactly these, no scan
+gh-runner --here                       # just the repo in this directory
 ```
 
 Output from each repo's runner is prefixed with `[owner/name]`. Ctrl+C deregisters all of them.
@@ -29,6 +30,6 @@ The [out-of-minutes fallback](./fallback) works the same way. Any machine that s
 
 - **One runner per repo per platform.** Personal GitHub accounts can't register account-wide runners, so each repo gets its own. Each idle runner is a small background process; a machine serving ten repos runs ten, and can take up to ten jobs at once.
 - **Public repos are skipped** — any fork could run code on your machine. `--allow-public` includes them.
-- **It never opens pull requests.** Run [`gh-runner setup`](./setup) inside a repo to point its workflows at gh-runner; the next scan finds it.
+- **It never opens pull requests.** Run [`gh-runner setup`](./setup) inside a repo to point its workflows at gh-runner; the next scan finds it. `--here` checks one repo's workflows and offers the pull request itself.
 - **A repo that fails** (no admin rights, say) is retried with a growing back-off, without affecting the others.
 - **Your token needs to read workflows.** With `gh auth login` that's already true. A fine-grained token also needs **Contents: read** — see [Docker](./docker#creating-the-token).

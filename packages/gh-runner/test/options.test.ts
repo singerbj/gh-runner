@@ -64,6 +64,26 @@ describe("parseArgs", () => {
     });
   });
 
+  it("serves every repo by default, and one repo when asked to", () => {
+    expect(parseArgs([]).options).toMatchObject({ allRepos: true, fixWorkflows: "never" });
+    expect(parseArgs(["mac", "linux"]).options.allRepos).toBe(true);
+    expect(parseArgs(["--here"]).options).toMatchObject({ allRepos: false, fixWorkflows: "ask" });
+    expect(parseArgs(["--repo", "me/a"]).options).toMatchObject({ allRepos: false, repo: "me/a" });
+    // Changing workflows needs one repo's checkout.
+    expect(parseArgs(["--fix-workflows"]).options).toMatchObject({
+      allRepos: false,
+      fixWorkflows: "always",
+    });
+    expect(parseArgs(["--fix-jobs", "build"]).options.allRepos).toBe(false);
+    expect(parseArgs(["--fix-label", "gh-runner"]).options.allRepos).toBe(false);
+  });
+
+  it("refuses one repo and several at once", () => {
+    expect(() => parseArgs(["--here", "--owner", "me"])).toThrow(/--here serves one repo/);
+    expect(() => parseArgs(["--repo", "me/a", "--repos", "me/b"])).toThrow(/--repo serves one/);
+    expect(() => parseArgs(["--owner", "me", "--fix-jobs", "build"])).toThrow(/--here/);
+  });
+
   it("refuses what can't mean anything across several repos", () => {
     expect(() => parseArgs(["--all-repos", "--repo", "me/a"])).toThrow(/--repos/);
     expect(() => parseArgs(["--all-repos", "--fix-workflows"])).toThrow(/setup/);

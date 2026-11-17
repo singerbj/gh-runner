@@ -3,6 +3,7 @@ import type { ChildProcess } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { CliError, InterruptedError } from "./errors.js";
+import { ghRunnerFleet } from "./fleet.js";
 import { createLogger } from "./logger.js";
 import { USAGE, parseArgs } from "./options.js";
 import { createConfirm } from "./prompt.js";
@@ -47,7 +48,8 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   }
 
   const abort = new AbortController();
-  let child: ChildProcess | undefined;
+  // Every runner this process started: one per platform, or per repo too.
+  const children = new Set<ChildProcess>();
   let interrupts = 0;
 
   const onSignal = (signal: NodeJS.Signals) => {
@@ -58,8 +60,8 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     }
     // When we own a terminal the signal already reached the whole foreground
     // process group, run.sh included; otherwise it has to be forwarded.
-    if (child && !process.stdout.isTTY && !process.stdin.isTTY) {
-      child.kill(signal);
+    if (!process.stdout.isTTY && !process.stdin.isTTY) {
+      for (const child of children) child.kill(signal);
     }
     abort.abort(new InterruptedError(signal));
   };
@@ -68,15 +70,22 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   process.on("SIGTERM", onSignal);
 
   try {
-    await ghRunner(parsed.options, {
+    const context = {
       logger,
       confirm: createConfirm(),
       selectPlatforms: terminalPlatformPicker,
       signal: abort.signal,
-      onRunnerSpawn: (spawned) => {
-        child = spawned;
+      onRunnerSpawn: (spawned: ChildProcess) => {
+        children.add(spawned);
+        spawned.once("exit", () => children.delete(spawned));
       },
-    });
+    };
+    const { options } = parsed;
+    if (options.allRepos || options.repos.length > 0) {
+      await ghRunnerFleet(options, context);
+    } else {
+      await ghRunner(options, context);
+    }
     logger.say(`${logger.styles.green("Done.")} Nothing left registered, nothing left on disk.`);
     return 0;
   } catch (error) {

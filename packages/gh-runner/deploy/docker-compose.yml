@@ -1,20 +1,28 @@
 # An always-on Linux gh-runner: `docker compose up -d` on any server with
 # Docker, or paste into Coolify as a "Docker Compose Empty" resource.
 #
-# Set GH_TOKEN and GH_RUNNER_REPO in a .env file next to this, or in Coolify's
-# Environment Variables tab:
-#   GH_TOKEN        fine-grained token for the repo, with Administration,
-#                   Actions and Variables read/write
-#   GH_RUNNER_REPO  owner/name, a private repo
-# Optional: GH_RUNNER_NAME (default: the container's hostname) and
-# GH_RUNNER_LABELS (extra labels, comma-separated).
+# Set GH_TOKEN in a .env file next to this, or in Coolify's Environment
+# Variables tab. That alone serves every private repo the token can see whose
+# workflows send jobs to gh-runner, and picks up new ones as you set them up:
+#   GH_TOKEN         fine-grained token with Administration, Actions and
+#                    Variables read/write, and Contents read
+# Optional:
+#   GH_RUNNER_REPO   owner/name: serve just this one private repo instead
+#   GH_RUNNER_OWNER  users or orgs to scan instead of the token's own account,
+#                    comma-separated
+#   GH_RUNNER_REPOS  owner/name,owner/name: serve exactly these
+#   GH_RUNNER_NAME   runner name (default: the container's hostname)
+#   GH_RUNNER_LABELS extra labels, comma-separated
+#
+# Run this on as many servers as you like: GitHub hands each queued job to
+# whichever one is idle, and the rest carry on when one goes away.
 #
 # Jobs run on GitHub's runner image plus Node LTS and gh, as a user with
 # passwordless sudo — the same machine `gh-runner linux` runs in Docker. They
 # don't inherit GH_TOKEN, but they run as the same user as gh-runner and could
-# read it from /proc, so scope it to the one repo. Jobs get no Docker socket and
-# nothing from the host, so `docker build`, `services:` and `container:` jobs
-# won't run here.
+# read it from /proc, so only give it repos where you trust everyone who can
+# push. Jobs get no Docker socket and nothing from the host, so `docker build`,
+# `services:` and `container:` jobs won't run here.
 
 services:
   gh-runner:
@@ -24,7 +32,9 @@ services:
     stop_grace_period: 60s
     environment:
       GH_TOKEN: ${GH_TOKEN}
-      GH_RUNNER_REPO: ${GH_RUNNER_REPO}
+      GH_RUNNER_REPO: ${GH_RUNNER_REPO:-}
+      GH_RUNNER_OWNER: ${GH_RUNNER_OWNER:-}
+      GH_RUNNER_REPOS: ${GH_RUNNER_REPOS:-}
       GH_RUNNER_NAME: ${GH_RUNNER_NAME:-}
       GH_RUNNER_LABELS: ${GH_RUNNER_LABELS:-}
     volumes:

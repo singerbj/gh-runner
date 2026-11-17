@@ -210,9 +210,9 @@ describe("out-of-minutes simulation", () => {
     await watcher.start();
     expect(github.variables.size).toBe(3);
 
-    // Ctrl+C.
-    await watcher.stop();
+    // Ctrl+C: the runners deregister, then the watcher stops.
     github.online = [];
+    await watcher.stop();
     expect(github.variables.size).toBe(0);
 
     // Still out of minutes, and nobody's hosting: nothing can run this, and it

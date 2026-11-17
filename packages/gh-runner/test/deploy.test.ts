@@ -1,4 +1,8 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { OS_LABELS, fallbackRunsOn } from "../src/constants.js";
@@ -14,6 +18,7 @@ import { readFallback } from "../src/workflows.js";
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const compose = read("deploy/docker-compose.yml");
 const entrypoint = read("deploy/entrypoint.sh");
+const entrypointPath = fileURLToPath(new URL("../deploy/entrypoint.sh", import.meta.url));
 const dockerfile = read("deploy/Dockerfile");
 const prompt = read("prompts/setup-repo.md");
 
@@ -76,19 +81,47 @@ describe("deploy/Dockerfile", () => {
 });
 
 describe("deploy/entrypoint.sh", () => {
-  it("only passes flags the CLI accepts", () => {
-    const argv = [...entrypoint.matchAll(/args\+?=\((.*)\)/g)]
-      .flatMap((match) => (match[1] ?? "").split(/\s+/))
-      .filter(Boolean)
-      .map((word) => (word.startsWith('"$') ? "placeholder" : word));
-    argv.splice(argv.indexOf("--repo") + 1, 1, "octocat/thing");
+  /** What the entrypoint hands gh-runner, given these variables. */
+  const argvFor = (vars: Record<string, string>): string[] => {
+    const dir = mkdtempSync(join(tmpdir(), "gh-runner-entrypoint-"));
+    try {
+      // A gh-runner that prints its arguments, one per line.
+      writeFileSync(join(dir, "gh-runner"), '#!/bin/sh\nprintf "%s\\n" "$@"\n', { mode: 0o755 });
+      const out = execFileSync("bash", [entrypointPath], {
+        env: { PATH: `${dir}:${process.env["PATH"] ?? ""}`, GH_RUNNER_NAME: "box", ...vars },
+        encoding: "utf8",
+      });
+      return out.split("\n").filter(Boolean);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
 
-    const { kind, options } = parseArgs(argv);
+  it("serves one repo with GH_RUNNER_REPO, with flags the CLI accepts", () => {
+    const { kind, options } = parseArgs(
+      argvFor({ GH_TOKEN: "t", GH_RUNNER_REPO: "octocat/thing", GH_RUNNER_LABELS: "gpu" }),
+    );
     expect(kind).toBe("run");
     expect(options.platforms).toEqual(["linux"]);
     expect(options.repo).toBe("octocat/thing");
+    expect(options.allRepos).toBe(false);
+    expect(options.name).toBe("box");
     expect(options.fixWorkflows).toBe("never");
-    expect(options.labels).toEqual(["placeholder"]);
+    expect(options.labels).toEqual(["gpu"]);
+  });
+
+  it("serves every repo when no repo is named", () => {
+    const { options } = parseArgs(argvFor({ GH_TOKEN: "t" }));
+    expect(options).toMatchObject({ repo: undefined, allRepos: true, owners: [], repos: [] });
+  });
+
+  it("narrows to owners, or names repos, when told to", () => {
+    expect(
+      parseArgs(argvFor({ GH_TOKEN: "t", GH_RUNNER_OWNER: "me,my-org" })).options,
+    ).toMatchObject({ allRepos: true, owners: ["me", "my-org"] });
+    expect(
+      parseArgs(argvFor({ GH_TOKEN: "t", GH_RUNNER_REPOS: "me/a,me/b" })).options,
+    ).toMatchObject({ allRepos: false, repos: ["me/a", "me/b"] });
   });
 
   it("hands the process to gh-runner, so tini's SIGTERM reaches it", () => {

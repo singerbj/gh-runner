@@ -69,3 +69,22 @@ export const silentLogger: Logger = {
   warn() {},
   error() {},
 };
+
+/**
+ * A logger that puts `prefix` in front of every line it writes — one per repo
+ * when several share a terminal. Blank lines stay blank.
+ */
+export function prefixLogger(logger: Logger, prefix: string): Logger {
+  const tag = (text: string) =>
+    text
+      .split("\n")
+      .map((line) => (line === "" ? line : `${prefix}${line}`))
+      .join("\n");
+  return {
+    styles: logger.styles,
+    say: (message) => logger.say(`${prefix}${message}`),
+    raw: (message) => logger.raw(tag(message)),
+    warn: (message) => logger.warn(`${prefix}${message}`),
+    error: (message) => logger.error(`${prefix}${message}`),
+  };
+}

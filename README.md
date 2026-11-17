@@ -1,17 +1,17 @@
 # gh-runner
 
-Monorepo for **[`@singerbj/gh-runner`](https://www.npmjs.com/package/@singerbj/gh-runner)** — a CLI that temporarily registers the machine you're sitting at as a GitHub Actions self-hosted runner for the repo you're standing in. It stays online for as long as the command runs, then deregisters and deletes itself.
+Monorepo for **[`@singerbj/gh-runner`](https://www.npmjs.com/package/@singerbj/gh-runner)** — a CLI that temporarily registers the machine you're sitting at as a GitHub Actions self-hosted runner for every repo of yours that uses it. It stays online for as long as the command runs, then deregisters and deletes itself. Run it on as many machines as you like: GitHub hands each job to whichever one is idle.
 
 ```bash
-cd ~/code/my-repo
-npx @singerbj/gh-runner              # pick platforms from a menu
+npx @singerbj/gh-runner              # every repo that uses gh-runner; pick platforms from a menu
 npx @singerbj/gh-runner mac linux    # or name them — one runner each, in parallel
 npx @singerbj/gh-runner --all        # everything this machine can serve
+cd ~/code/my-repo && npx @singerbj/gh-runner --here   # just this repo
 ```
 
 Linux can come from a container, so any machine can serve it; macOS and Windows have to be native, so asking a Mac for a Windows runner is an error rather than a silent no-op.
 
-It also audits `.github/workflows` first, so you find out that nothing targets `runs-on: [self-hosted, gh-runner]` _before_ you sit waiting for a job that never arrives — and it offers to open a PR that fixes the YAML, prepared in a throwaway git worktree so your working tree is never touched.
+With `--here` it also audits that repo's `.github/workflows` first, so you find out that nothing targets `runs-on: [self-hosted, gh-runner]` _before_ you sit waiting for a job that never arrives — and it offers to open a PR that fixes the YAML, prepared in a throwaway git worktree so your working tree is never touched.
 
 That PR doesn't hand your CI to a laptop that might be closed. Every job stays on the GitHub-hosted runner it already had, and moves to your machine **only while the repo can't start hosted jobs** — out of Actions minutes, over a spending limit, a failed payment:
 
@@ -32,7 +32,7 @@ Full CLI docs live in [`packages/gh-runner/README.md`](packages/gh-runner/README
 
 Setting up a new project is one command, `npx @singerbj/gh-runner setup`, which opens the workflow PR and registers nothing. Every release also ships:
 
-- **`ghcr.io/singerbj/gh-runner`**, a `linux/amd64` + `linux/arm64` image that keeps a Linux runner online permanently on any server with Docker, Coolify included. It's built from [`packages/gh-runner/deploy/`](packages/gh-runner/deploy/), which also holds the [`docker-compose.yml`](packages/gh-runner/deploy/docker-compose.yml) that runs it. [Details](packages/gh-runner/README.md#keeping-a-runner-online-with-docker).
+- **`ghcr.io/singerbj/gh-runner`**, a `linux/amd64` + `linux/arm64` image that keeps a Linux runner online permanently on any server with Docker, Coolify included — for every repo the token can see that uses gh-runner, or just one. It's built from [`packages/gh-runner/deploy/`](packages/gh-runner/deploy/), which also holds the [`docker-compose.yml`](packages/gh-runner/deploy/docker-compose.yml) that runs it. [Details](packages/gh-runner/README.md#keeping-a-runner-online-with-docker).
 - **[`packages/gh-runner/prompts/setup-repo.md`](packages/gh-runner/prompts/setup-repo.md)**, a prompt that has a coding agent run `setup` and finish the job around it. [Details](packages/gh-runner/README.md#setting-a-repo-up-with-an-ai-agent).
 
 The compose file and the prompt are in the npm package and attached to every GitHub release as `docker-compose.yml` and `gh-runner-setup-prompt.md`. The docs site embeds them straight from these files.

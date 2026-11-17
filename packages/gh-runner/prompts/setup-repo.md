@@ -11,7 +11,7 @@ Every job stays on the GitHub-hosted runner it already uses. gh-runner moves job
 
 3. Add a short "Self-hosted fallback" section to the README (or CONTRIBUTING.md, if CI is documented there), pushed to the same pull request branch. It should say:
    - Jobs run on GitHub-hosted runners, and fall back to a gh-runner machine only when the repository can't start hosted jobs.
-   - `npx @singerbj/gh-runner` serves jobs from a machine for as long as it runs (needs `gh auth login` and admin rights on the repo).
+   - `npx @singerbj/gh-runner` serves jobs from a machine for as long as it runs, for every repo of the user's that is set up this way (needs `gh auth login` and admin rights on the repos); `--here` serves only this one.
    - https://github.com/singerbj/gh-runner/releases/latest/download/docker-compose.yml keeps a Linux runner online permanently.
    - If a runner machine dies without cleaning up, jobs can wait for a runner that isn't there. `gh variable delete GH_RUNNER_LINUX` (or `_MAC`, `_WINDOWS`, or plain `GH_RUNNER`) sends them back to GitHub-hosted runners.
 

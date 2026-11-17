@@ -62,6 +62,31 @@ export interface RunContext {
    * library caller that passes nothing simply gets the host platform.
    */
   selectPlatforms?: (choices: ReadonlyArray<MenuChoice<RunnerOs>>) => Promise<RunnerOs[] | null>;
+  /**
+   * Put in front of every line the runners themselves print, e.g. `[you/repo] `
+   * when several repos share one terminal. The logger is the caller's to prefix.
+   */
+  outputPrefix?: string;
+  /**
+   * Whether the checkout in `cwd` belongs to the repo being served. False when
+   * the repo was found some other way — serving every repo you own — so the
+   * audit never falls back to scanning some other repo's workflows.
+   */
+  useCheckout?: boolean;
+}
+
+/** What this machine will serve, worked out once: see {@link planHost}. */
+export interface HostPlan {
+  hostPlatform: RunnerPlatform;
+  hostLabel: string;
+  targets: ResolvedTarget[];
+  /** For each target: the platform its runner reports, and every label it carries. */
+  runners: Array<{
+    target: ResolvedTarget;
+    platform: RunnerPlatform;
+    labels: string[];
+    allLabels: string[];
+  }>;
 }
 
 export interface RunSummary {
@@ -203,63 +228,10 @@ export async function ghRunner(
   }
   throwIfAborted();
 
-  const hostPlatform = context.platform ?? detectPlatform();
-  const hostLabel = await detectHostLabel(commandRunner, context.nodePlatform);
+  const host = await planHost(options, context, logger);
+  const { hostLabel, targets } = host;
 
-  const requested = parseTargetNames(options.platforms);
-  const wantsAll = options.all || requested.all;
-  const preferDocker = Boolean(options.dockerImage || options.dockerPlatform);
-  // Probing Docker is only worth it when something other than this machine's
-  // own OS might be on the table.
-  const mayNeedDocker =
-    wantsAll ||
-    preferDocker ||
-    requested.targets.some((os) => os !== hostPlatform.os) ||
-    (requested.targets.length === 0 && Boolean(context.selectPlatforms));
-
-  let dockerReady = false;
-  let dockerReason: string | undefined;
-  if (mayNeedDocker) {
-    try {
-      await assertDockerAvailable(commandRunner, signal ? { signal } : {});
-      dockerReady = true;
-    } catch (error) {
-      dockerReason = error instanceof Error ? error.message : String(error);
-    }
-  } else {
-    dockerReason = "not checked";
-  }
-
-  const platformOptions = planOptions({
-    hostOs: hostPlatform.os,
-    dockerReady,
-    dockerReason,
-    preferDocker,
-  });
-
-  const chosen = await choosePlatforms({
-    options,
-    requested,
-    wantsAll,
-    platformOptions,
-    hostOs: hostPlatform.os,
-    logger,
-    ...(context.selectPlatforms ? { selectPlatforms: context.selectPlatforms } : {}),
-  });
-  throwIfAborted();
-
-  const targets = resolveTargets(chosen, platformOptions);
-  if (targets.length === 0) {
-    throw new CliError("no platforms selected — nothing to do");
-  }
-
-  const plans: TargetPlan[] = targets.map((target) => {
-    const platform: RunnerPlatform =
-      target.mode === "docker"
-        ? { os: "linux", arch: archForDockerPlatform(options.dockerPlatform, hostPlatform.arch) }
-        : { os: target.os, arch: hostPlatform.arch };
-
-    const labels = [DEFAULT_LABEL, osLabel(target.os), hostLabel, ...options.labels];
+  const plans: TargetPlan[] = host.runners.map(({ target, platform, labels, allLabels }) => {
     const short = SHORT_NAME[target.os];
     const base = options.name ?? `${hostLabel}-${short}`;
     const runnerName =
@@ -270,13 +242,14 @@ export async function ghRunner(
       platform,
       runnerName,
       labels,
-      allLabels: [...implicitLabels(platform), ...labels],
+      allLabels,
       prefix: targets.length > 1 ? `[${target.name}] ` : undefined,
     };
   });
 
   // Auditing and fixing workflows both need the checkout, not just the slug.
-  const repoRoot = await gh.repoRoot(options.cwd ?? process.cwd());
+  const repoRoot =
+    context.useCheckout === false ? null : await gh.repoRoot(options.cwd ?? process.cwd());
 
   let workflows: WorkflowReport | undefined;
   let workflowBranch: string | undefined;
@@ -374,6 +347,7 @@ export async function ghRunner(
     ...(signal ? { signal } : {}),
     ...(context.onRunnerSpawn ? { onRunnerSpawn: context.onRunnerSpawn } : {}),
     ...(context.fetchImpl ? { fetchImpl: context.fetchImpl } : {}),
+    ...(context.outputPrefix ? { outputPrefix: context.outputPrefix } : {}),
   };
 
   // Moves jobs here while — and only while — GitHub won't start hosted ones.
@@ -386,6 +360,7 @@ export async function ghRunner(
           cleanupGh,
           logger,
           labels,
+          runnerNames: plans.map((plan) => plan.runnerName),
           ...(workflows?.scanned ? { workflowFiles: workflows.fallbackFiles } : {}),
         })
       : undefined;
@@ -420,6 +395,88 @@ export async function ghRunner(
   }
 
   return { runners, workflows };
+}
+
+/**
+ * Works out which platforms this machine will serve and how — natively or in
+ * a container — asking when there's a menu to ask on, and the labels each
+ * runner will carry. Throws when nothing is left to serve.
+ */
+export async function planHost(
+  partialOptions: Partial<RunnerOptions> = {},
+  context: RunContext = {},
+  logger: Logger = context.logger ?? silentLogger,
+): Promise<HostPlan> {
+  const options: RunnerOptions = { ...emptyOptions(), ...partialOptions };
+  const commandRunner = context.commandRunner ?? execCommand;
+  const signal = context.signal;
+  const throwIfAborted = () => {
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new InterruptedError();
+    }
+  };
+
+  const hostPlatform = context.platform ?? detectPlatform();
+  const hostLabel = await detectHostLabel(commandRunner, context.nodePlatform);
+
+  const requested = parseTargetNames(options.platforms);
+  const wantsAll = options.all || requested.all;
+  const preferDocker = Boolean(options.dockerImage || options.dockerPlatform);
+  // Probing Docker is only worth it when something other than this machine's
+  // own OS might be on the table.
+  const mayNeedDocker =
+    wantsAll ||
+    preferDocker ||
+    requested.targets.some((os) => os !== hostPlatform.os) ||
+    (requested.targets.length === 0 && Boolean(context.selectPlatforms));
+
+  let dockerReady = false;
+  let dockerReason: string | undefined;
+  if (mayNeedDocker) {
+    try {
+      await assertDockerAvailable(commandRunner, signal ? { signal } : {});
+      dockerReady = true;
+    } catch (error) {
+      dockerReason = error instanceof Error ? error.message : String(error);
+    }
+  } else {
+    dockerReason = "not checked";
+  }
+
+  const platformOptions = planOptions({
+    hostOs: hostPlatform.os,
+    dockerReady,
+    dockerReason,
+    preferDocker,
+  });
+
+  const chosen = await choosePlatforms({
+    options,
+    requested,
+    wantsAll,
+    platformOptions,
+    hostOs: hostPlatform.os,
+    logger,
+    ...(context.selectPlatforms ? { selectPlatforms: context.selectPlatforms } : {}),
+  });
+  throwIfAborted();
+
+  const targets = resolveTargets(chosen, platformOptions);
+  if (targets.length === 0) {
+    throw new CliError("no platforms selected — nothing to do");
+  }
+
+  const runners = targets.map((target) => {
+    const platform: RunnerPlatform =
+      target.mode === "docker"
+        ? { os: "linux", arch: archForDockerPlatform(options.dockerPlatform, hostPlatform.arch) }
+        : { os: target.os, arch: hostPlatform.arch };
+
+    const labels = [DEFAULT_LABEL, osLabel(target.os), hostLabel, ...options.labels];
+    return { target, platform, labels, allLabels: [...implicitLabels(platform), ...labels] };
+  });
+
+  return { hostPlatform, hostLabel, targets, runners };
 }
 
 interface ChooseInput {
@@ -518,6 +575,13 @@ interface TargetRun {
   signal?: AbortSignal;
   onRunnerSpawn?: SpawnHook;
   fetchImpl?: typeof fetch;
+  outputPrefix?: string;
+}
+
+/** Where a runner's own output goes: behind a prefix when the terminal is shared. */
+function outputPrefix(run: TargetRun): string | undefined {
+  const prefix = `${run.outputPrefix ?? ""}${run.plan.prefix ?? ""}`;
+  return prefix === "" ? undefined : prefix;
 }
 
 /** Downloads, registers, and runs a runner directly on this machine. */
@@ -612,7 +676,8 @@ async function runNativeTarget(run: TargetRun & { runnerVersion: string }): Prom
     // No abort signal here: Ctrl+C reaches the runner through the terminal's
     // foreground process group, and it shuts itself down cleanly.
     const runScript = runnerCommand(platform, runnerDir, "run", [], env);
-    const stdio: ExecOptions = plan.prefix ? { prefix: plan.prefix } : { inherit: true };
+    const prefix = outputPrefix(run);
+    const stdio: ExecOptions = prefix ? { prefix } : { inherit: true };
     await commandRunner(runScript.command, runScript.args, {
       cwd: runnerDir,
       env: runScript.env,
@@ -670,7 +735,7 @@ async function runDockerTarget(run: TargetRun): Promise<RunSummary> {
         registrationToken,
       },
       run.onRunnerSpawn,
-      plan.prefix,
+      outputPrefix(run),
       env,
     );
   } finally {

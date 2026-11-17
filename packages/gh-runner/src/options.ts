@@ -17,6 +17,19 @@ export interface RunnerOptions {
   allowPublic: boolean;
   /** OWNER/NAME. When omitted, detected from `cwd`. */
   repo: string | undefined;
+  /**
+   * Serve every repo you own whose workflows send jobs to gh-runner, found by
+   * scanning them, instead of one repo. The CLI's default. Rescanned while it
+   * runs, so a repo set up later is picked up without a restart.
+   */
+  allRepos: boolean;
+  /**
+   * Accounts or organisations whose repos `allRepos` scans. Empty means the
+   * account `gh` is logged in as. Giving any turns `allRepos` on.
+   */
+  owners: string[];
+  /** Serve exactly these OWNER/NAME repos, alongside any `allRepos` finds. */
+  repos: string[];
   /** Extra labels on top of `gh-runner` and the host label. */
   labels: string[];
   /** Skip the `runs-on` audit of the repo's workflows. */
@@ -67,8 +80,9 @@ export interface ParsedArgs {
 export const USAGE = `gh-runner — temporarily register this machine as a GitHub Actions runner
 
 USAGE
-  gh-runner [platforms...] [options]     # run from inside a git repo
+  gh-runner [platforms...] [options]     # every repo of yours that uses gh-runner
   npx @singerbj/gh-runner [platforms...] [options]
+  gh-runner --here [platforms...]        # just the repo you're standing in
   gh-runner setup [--dry-run]            # set the repo up; registers nothing
 
 SETUP
@@ -88,12 +102,24 @@ PLATFORMS
   Linux can come from a container, so any machine can serve it. macOS and
   Windows have to be native, so asking for one this machine isn't errors.
 
+REPOS
+  gh-runner                By default, serves every private repo you own whose
+                           workflows send jobs to gh-runner, one runner per repo
+                           per platform. Rescanned every few minutes, so new
+                           repos are picked up
+  --owner a,b            Scan these users or organisations instead
+  --repos a/b,c/d        Serve exactly these repos (add --all-repos to scan too)
+  --here                 Serve only the repo in this directory, checking its
+                         workflows and offering to fix them
+  --repo OWNER/NAME      Serve only this repo
+  Run it on several machines and they share the work: GitHub hands each queued
+  job to whichever matching runner is idle, on any of them.
+
 OPTIONS
   --all                  Serve every platform this machine can
   --os a,b               Platforms to serve (same as positional arguments)
   --once                 Take one job, then deregister (default: stay online)
   --labels a,b,c         Extra labels in addition to gh-runner and the host label
-  --repo OWNER/NAME      Target a specific repo instead of detecting from cwd
   --name NAME            Runner name to register (default: <host>-<pid>)
   --allow-public         Register even if the repo isn't confirmed private (dangerous)
   --docker-image IMAGE   Image for containerised runners (default: ${DEFAULT_IMAGE})
@@ -101,10 +127,11 @@ OPTIONS
   --runner-version X.Y.Z Pin the runner version (default: latest release)
   --cache-dir PATH       Where to cache runner tarballs
   --no-workflow-check    Skip the runs-on audit of .github/workflows
-  --fix-workflows        Open the workflow PR without asking first. It keeps each
-                         job on its GitHub-hosted runner, and moves it here only
-                         while the repo can't start hosted jobs (out of minutes, a
-                         spending limit, a failed payment)
+  --fix-workflows        Implies --here. Open the workflow PR without asking
+                         first. It keeps each job on its GitHub-hosted runner,
+                         and moves it here only while the repo can't start
+                         hosted jobs (out of minutes, a spending limit, a
+                         failed payment)
   --no-fix-workflows     Never offer to open it
   --fix-jobs a,b         Limit the fix to these job ids
   --fix-label LABEL      Force one label on every job the fix PR rewrites
@@ -133,6 +160,9 @@ export function emptyOptions(): RunnerOptions {
     once: false,
     allowPublic: false,
     repo: undefined,
+    allRepos: false,
+    owners: [],
+    repos: [],
     labels: [],
     skipWorkflowCheck: false,
     fixWorkflows: "ask",
@@ -206,6 +236,8 @@ export function parseArgs(input: readonly string[]): ParsedArgs {
     return value;
   };
 
+  let here = false;
+
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] as string;
     switch (arg) {
@@ -218,6 +250,28 @@ export function parseArgs(input: readonly string[]): ParsedArgs {
         break;
       case "--repo":
         options.repo = assertRepoSlug(requireValue("--repo", argv[i + 1]));
+        i += 1;
+        break;
+      case "--here":
+        here = true;
+        break;
+      case "--all-repos":
+        options.allRepos = true;
+        break;
+      case "--owner":
+        for (const owner of parseLabels(requireValue("--owner", argv[i + 1]))) {
+          if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(owner)) {
+            throw new CliError(`--owner expects a GitHub user or organisation, got: ${owner}`);
+          }
+          options.owners.push(owner);
+        }
+        options.allRepos = true;
+        i += 1;
+        break;
+      case "--repos":
+        options.repos.push(
+          ...parseLabels(requireValue("--repos", argv[i + 1])).map(assertRepoSlug),
+        );
         i += 1;
         break;
       case "--labels":
@@ -311,6 +365,28 @@ export function parseArgs(input: readonly string[]): ParsedArgs {
   }
   if (options.dryRun) {
     throw new CliError("--dry-run only applies to: gh-runner setup");
+  }
+
+  // Every repo is the default. One repo is asked for by naming it, by --here,
+  // or by a flag that only makes sense in a checkout.
+  const oneRepo =
+    options.repo !== undefined ||
+    here ||
+    options.fixWorkflows === "always" ||
+    options.fixLabel !== undefined;
+  const severalRepos = options.allRepos || options.repos.length > 0;
+  if (oneRepo && severalRepos) {
+    throw new CliError(
+      options.repo || here
+        ? `${options.repo ? "--repo" : "--here"} serves one repo; use --repos a/b,c/d to name several`
+        : "the --fix-* options change one repo's workflows — add --here inside that repo, or run gh-runner setup there",
+    );
+  }
+  if (!oneRepo) {
+    // --repos on its own serves exactly those; anything else scans.
+    if (options.repos.length === 0) options.allRepos = true;
+    // Nobody is there to ask, once per repo, about a pull request.
+    options.fixWorkflows = "never";
   }
 
   // Validate names now so a typo fails before anything is registered.

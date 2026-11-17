@@ -5,7 +5,10 @@ export {
   runnerEnv,
   GH_TOKEN_VARIABLES,
 } from "./runner.js";
-export type { RunContext, RunSummary, RunResult } from "./runner.js";
+export { planHost } from "./runner.js";
+export type { RunContext, RunSummary, RunResult, HostPlan } from "./runner.js";
+export { ghRunnerFleet, usesGhRunner, RESCAN_INTERVAL_MS, RETRY_BASE_MS } from "./fleet.js";
+export type { FleetContext, FleetResult, RepoScan } from "./fleet.js";
 export { ghRunnerSetup, COMPOSE_URL } from "./setup.js";
 export type { SetupResult } from "./setup.js";
 export {
@@ -41,7 +44,7 @@ export {
   fallbackRunsOn,
 } from "./constants.js";
 export { GhClient, parseDigestFromReleaseBody } from "./gh.js";
-export type { GhClientOptions, RepoVisibility } from "./gh.js";
+export type { GhClientOptions, RepoVisibility, OwnedRepo } from "./gh.js";
 export {
   inspectWorkflows,
   checkoutWorkflows,
@@ -114,7 +117,7 @@ export {
   removeContainer,
 } from "./docker.js";
 export type { DockerRunOptions } from "./docker.js";
-export { createLogger, silentLogger, createStyles } from "./logger.js";
+export { createLogger, silentLogger, createStyles, prefixLogger } from "./logger.js";
 export type { Logger, LoggerOptions, Styles } from "./logger.js";
 export { execCommand, execCapture, execSucceeds, CommandFailedError } from "./exec.js";
 export type { CommandRunner, ExecOptions, ExecResult, SpawnHook } from "./exec.js";

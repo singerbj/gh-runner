@@ -1,7 +1,7 @@
 # ghcr.io/singerbj/gh-runner: an always-on Linux gh-runner.
 #
 #   docker run -d --restart unless-stopped \
-#     -e GH_TOKEN=github_pat_… -e GH_RUNNER_REPO=you/your-repo \
+#     -e GH_TOKEN=github_pat_… \
 #     ghcr.io/singerbj/gh-runner
 #
 # Every release publishes this for linux/amd64 and linux/arm64, tagged with the
@@ -18,6 +18,17 @@ FROM ghcr.io/actions/actions-runner:latest
 
 USER root
 
+# libatomic1: the node:lts binary links against it, and GitHub's runner image
+# doesn't ship it.
+RUN install -d -m 755 /etc/apt/keyrings \
+ && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends gh tini libatomic1 \
+ && rm -rf /var/lib/apt/lists/*
+
 # Node comes from the official image rather than a distro package, so it is the
 # same LTS build the node:lts image carries.
 COPY --from=node:lts /usr/local/bin/node /usr/local/bin/node
@@ -29,15 +40,6 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
       ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack; \
     fi \
  && node --version && npm --version
-
-RUN install -d -m 755 /etc/apt/keyrings \
- && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-      -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
- && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-      > /etc/apt/sources.list.d/github-cli.list \
- && apt-get update \
- && apt-get install -y --no-install-recommends gh tini \
- && rm -rf /var/lib/apt/lists/*
 
 ARG GH_RUNNER_VERSION=latest
 RUN npm install -g --no-fund --no-audit "@singerbj/gh-runner@${GH_RUNNER_VERSION}" \
